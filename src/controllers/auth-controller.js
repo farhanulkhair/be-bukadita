@@ -3,12 +3,18 @@ const Joi = require("joi");
 
 // Validation schemas
 const profileSchema = Joi.object({
-  full_name: Joi.string().trim().min(2).max(100).required(),
+  full_name: Joi.string().min(2).max(100).required().messages({
+    'string.min': 'Full name must be at least 2 characters long',
+    'string.max': 'Full name must not exceed 100 characters',
+    'any.required': 'Full name is required'
+  }),
   phone: Joi.string()
-    .trim()
-    .pattern(/^[\+]?[1-9][\d]{0,15}$/)
-    .optional(),
-  role: Joi.string().valid("pengguna", "admin").default("pengguna"),
+    .pattern(/^(\+62[8-9][\d]{8,11}|0[8-9][\d]{8,11})$/)
+    .optional()
+    .messages({
+      'string.pattern.base': 'Phone number must start with 08 and be 10-13 digits long (e.g., 08123456789)'
+    }),
+  role: Joi.string().valid('pengguna', 'admin').optional()
 });
 
 const registerSchema = Joi.object({
@@ -17,7 +23,7 @@ const registerSchema = Joi.object({
   full_name: Joi.string().trim().min(2).max(100).required(),
   phone: Joi.string()
     .trim()
-    .pattern(/^[\+]?[1-9][\d]{0,15}$/)
+    .pattern(/^(\+62[8-9][\d]{8,11}|0[8-9][\d]{8,11})$/)
     .optional(),
 });
 
@@ -28,178 +34,119 @@ const loginSchema = Joi.object({
 
 const createOrUpdateProfile = async (req, res) => {
   try {
-    // Validate request body
-    const { error, value } = profileSchema.validate(req.body);
-    if (error) {
+    const { error: validationError, value } = profileSchema.validate(req.body);
+    if (validationError) {
       return res.status(400).json({
         error: {
-          message: error.details[0].message,
+          message: "Validation error", 
           code: "VALIDATION_ERROR",
+          details: validationError.details[0].message,
         },
       });
     }
 
-    const { full_name, phone, role = "pengguna" } = value;
+    const { full_name, phone } = value;
     const userId = req.user.id;
 
-    // Check if profile exists
-    const { data: existingProfile } = await supabase
+    console.log("=== PROFILE CREATE/UPDATE START ===");
+    console.log("User ID:", userId);
+    console.log("User Email:", req.user.email);
+    console.log("Profile data:", { full_name, phone });
+
+    // Check if profile already exists
+    const { data: existingProfile, error: checkError } = await supabase
       .from("profiles")
       .select("*")
       .eq("id", userId)
       .single();
 
-    let result;
+    if (checkError && checkError.code !== 'PGRST116') {
+      console.error("Error checking existing profile:", checkError);
+      return res.status(500).json({
+        error: {
+          message: "Failed to check existing profile",
+          code: "CHECK_ERROR",
+          details: checkError.message,
+        },
+      });
+    }
 
+    let profileData;
+    
     if (existingProfile) {
+      console.log("Profile exists, updating...");
       // Update existing profile
-      const { data, error: updateError } = await supabase
+      const { data, error } = await supabase
         .from("profiles")
         .update({
           full_name,
           phone,
-          role: existingProfile.role, // Don't allow role change via this endpoint unless user is admin
+          updated_at: new Date().toISOString(),
         })
         .eq("id", userId)
         .select()
         .single();
 
-      if (updateError) {
-        console.error("Profile update error:", updateError);
+      if (error) {
+        console.error("Profile update error:", error);
         return res.status(500).json({
           error: {
             message: "Failed to update profile",
             code: "UPDATE_ERROR",
+            details: error.message,
           },
         });
       }
 
-      result = data;
+      profileData = data;
+      console.log("Profile updated successfully:", profileData);
     } else {
+      console.log("Profile doesn't exist, creating new profile...");
       // Create new profile
-      const { data, error: insertError } = await supabase
+      const { data, error } = await supabase
         .from("profiles")
         .insert({
           id: userId,
           full_name,
           phone,
-          role,
+          role: "pengguna",
         })
         .select()
         .single();
 
-      if (insertError) {
-        console.error("Profile creation error:", insertError);
+      if (error) {
+        console.error("Profile creation error:", error);
         return res.status(500).json({
           error: {
             message: "Failed to create profile",
-            code: "CREATION_ERROR",
+            code: "CREATE_ERROR",
+            details: error.message,
           },
         });
       }
 
-      result = data;
+      profileData = data;
+      console.log("Profile created successfully:", profileData);
     }
 
-    res.status(200).json({
-      message: existingProfile
-        ? "Profile updated successfully"
-        : "Profile created successfully",
-      data: result,
-    });
-  } catch (error) {
-    console.error("Auth controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
-      },
-    });
-  }
-};
-
-// ⚠️ TEMPORARY ENDPOINT FOR TESTING ONLY - REMOVE IN PRODUCTION
-// POST /api/auth/test-login - Generate temporary user for testing
-const testLogin = async (req, res) => {
-  try {
-    if (process.env.NODE_ENV === "production") {
-      return res.status(404).json({
-        error: {
-          message: "Endpoint not available in production",
-          code: "NOT_AVAILABLE",
-        },
-      });
-    }
-
-    const { email, password = "testpassword123" } = req.body;
-
-    if (!email) {
-      return res.status(400).json({
-        error: {
-          message: "Email is required",
-          code: "VALIDATION_ERROR",
-        },
-      });
-    }
-
-    if (!supabaseAdmin) {
-      return res.status(500).json({
-        error: {
-          message: "Service role key not configured",
-          code: "CONFIG_ERROR",
-        },
-      });
-    }
-
-    // Create or get user using admin client
-    const { data: authData, error: authError } =
-      await supabaseAdmin.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-      });
-
-    if (authError && authError.message !== "User already registered") {
-      console.error("Test user creation error:", authError);
-      return res.status(500).json({
-        error: {
-          message: "Failed to create test user",
-          code: "CREATION_ERROR",
-        },
-      });
-    }
-
-    // Generate access token
-    const { data: signInData, error: signInError } =
-      await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-    if (signInError) {
-      console.error("Test sign in error:", signInError);
-      return res.status(500).json({
-        error: {
-          message: "Failed to sign in test user",
-          code: "SIGNIN_ERROR",
-        },
-      });
-    }
-
-    res.status(200).json({
-      message: "Test user created/signed in successfully",
+    return res.status(200).json({
+      message: existingProfile ? "Profile updated successfully" : "Profile created successfully",
       data: {
-        access_token: signInData.session.access_token,
-        user: signInData.user,
-        note: '⚠️ This is for testing only. Use this token in Authorization header as "Bearer <token>"',
+        user: {
+          id: userId,
+          email: req.user.email,
+          profile: profileData,
+        },
       },
     });
+
   } catch (error) {
-    console.error("Test login error:", error);
-    res.status(500).json({
+    console.error("Profile operation error:", error);
+    return res.status(500).json({
       error: {
         message: "Internal server error",
         code: "INTERNAL_ERROR",
+        details: error.message,
       },
     });
   }
@@ -208,26 +155,26 @@ const testLogin = async (req, res) => {
 // POST /api/auth/register - Register with email & password
 const register = async (req, res) => {
   try {
-    // Validate request body
-    const { error, value } = registerSchema.validate(req.body);
-    if (error) {
+    const { error: validationError, value } = registerSchema.validate(req.body);
+    if (validationError) {
       return res.status(400).json({
         error: {
-          message: error.details[0].message,
+          message: "Validation error",
           code: "VALIDATION_ERROR",
+          details: validationError.details[0].message,
         },
       });
     }
 
     const { email, password, full_name, phone } = value;
 
-    // Additional email validation
-    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({
         error: {
-          message: "Please provide a valid email address",
-          code: "INVALID_EMAIL_FORMAT",
+          message: "Invalid email format",
+          code: "INVALID_EMAIL",
         },
       });
     }
@@ -240,58 +187,15 @@ const register = async (req, res) => {
       password,
       options: {
         data: {
-          full_name, // This will be accessible in user metadata
+          full_name,
+          phone,
         },
       },
     });
 
     if (authError) {
-      console.error("Register error:", authError);
-
-      // Handle specific Supabase errors
-      if (authError.code === "email_address_invalid") {
-        return res.status(400).json({
-          error: {
-            message:
-              "The email address format is invalid. Please check and try again.",
-            code: "INVALID_EMAIL_FORMAT",
-            details: authError.message,
-          },
-        });
-      }
-
-      if (
-        authError.message.includes("User already registered") ||
-        authError.code === "user_already_exists"
-      ) {
-        return res.status(400).json({
-          error: {
-            message: "Email already registered",
-            code: "EMAIL_EXISTS",
-          },
-        });
-      }
-
-      if (authError.code === "signup_disabled") {
-        return res.status(400).json({
-          error: {
-            message: "Registration is currently disabled",
-            code: "SIGNUP_DISABLED",
-          },
-        });
-      }
-
-      if (authError.code === "weak_password") {
-        return res.status(400).json({
-          error: {
-            message: "Password is too weak. Please use a stronger password.",
-            code: "WEAK_PASSWORD",
-          },
-        });
-      }
-
-      // Generic error
-      return res.status(500).json({
+      console.error("Registration error:", authError);
+      return res.status(400).json({
         error: {
           message: "Failed to register user",
           code: "REGISTER_ERROR",
@@ -303,13 +207,14 @@ const register = async (req, res) => {
     console.log("Registration response:", {
       user: authData.user?.id,
       session: !!authData.session,
+      email_confirmed: authData.user?.email_confirmed_at,
     });
 
-    // If user is created but not confirmed, return appropriate message
-    if (authData.user && !authData.session) {
-      console.log("User created but email confirmation required");
+    // Since email confirmation is disabled, user should have session immediately
+    if (authData.user && authData.session) {
+      console.log("User created with immediate session (email confirmation disabled)");
 
-      // Still try to create profile for unconfirmed users
+      // Create profile for the new user
       try {
         const { data: profileData, error: profileError } = await supabase
           .from("profiles")
@@ -323,93 +228,73 @@ const register = async (req, res) => {
           .single();
 
         if (profileError) {
-          console.error(
-            "Profile creation error for unconfirmed user:",
-            profileError
-          );
+          console.error("Profile creation error:", profileError);
+          // Don't fail registration if profile creation fails
+          // User can create profile later via create-missing-profile endpoint
         } else {
-          console.log("Profile created for unconfirmed user:", profileData);
+          console.log("Profile created successfully:", profileData);
         }
-      } catch (error) {
-        console.error("Error creating profile for unconfirmed user:", error);
-      }
 
-      return res.status(201).json({
-        message:
-          "Registration successful. Please check your email to confirm your account.",
-        data: {
-          user_id: authData.user.id,
-          email: authData.user.email,
-          confirmation_sent: true,
-        },
-      });
-    }
-
-    // If user is created and session exists (email confirmation disabled)
-    if (authData.user && authData.session) {
-      console.log("User created with session, creating profile...");
-
-      // Create profile
-      const { data: profileData, error: profileError } = await supabase
-        .from("profiles")
-        .insert({
-          id: authData.user.id,
-          full_name,
-          phone,
-          role: "pengguna",
-        })
-        .select()
-        .single();
-
-      if (profileError) {
-        console.error("Profile creation error:", profileError);
-        // Return success for user creation but note profile error
         return res.status(201).json({
-          message: "Registration successful, but profile creation failed",
+          message: "Registration successful",
           data: {
             access_token: authData.session.access_token,
             refresh_token: authData.session.refresh_token,
+            expires_at: authData.session.expires_at,
+            user: {
+              id: authData.user.id,
+              email: authData.user.email,
+              profile: profileData || null,
+            },
+          },
+        });
+      } catch (error) {
+        console.error("Error during profile creation:", error);
+        // Still return success response even if profile creation fails
+        return res.status(201).json({
+          message: "Registration successful (profile creation pending)",
+          data: {
+            access_token: authData.session.access_token,
+            refresh_token: authData.session.refresh_token,
+            expires_at: authData.session.expires_at,
             user: {
               id: authData.user.id,
               email: authData.user.email,
               profile: null,
             },
           },
-          warning:
-            "Profile was not created due to database error. Please contact support.",
         });
       }
+    }
 
-      console.log("Profile created successfully:", profileData);
-
+    // This should not happen when email confirmation is disabled
+    // But keeping as fallback
+    if (authData.user && !authData.session) {
+      console.log("User created but no session - unexpected with email confirmation disabled");
       return res.status(201).json({
-        message: "Registration successful",
+        message: "Registration successful but session not created. Please try logging in.",
         data: {
-          access_token: authData.session.access_token,
-          refresh_token: authData.session.refresh_token,
-          user: {
-            id: authData.user.id,
-            email: authData.user.email,
-            profile: profileData,
-          },
+          user_id: authData.user.id,
+          email: authData.user.email,
         },
       });
     }
 
-    // Fallback response
-    res.status(201).json({
-      message: "Registration initiated",
-      data: {
-        user_id: authData.user?.id,
-        email: authData.user?.email,
+    // Should never reach here
+    return res.status(500).json({
+      error: {
+        message: "Unexpected registration state",
+        code: "UNEXPECTED_STATE",
       },
     });
+
   } catch (error) {
-    console.error("Register controller error:", error);
-    res.status(500).json({
+    console.error("Registration error:", error);
+    return res.status(500).json({
       error: {
-        message: "Internal server error",
+        message: "Internal server error during registration",
         code: "INTERNAL_ERROR",
+        details: error.message,
       },
     });
   }
@@ -738,7 +623,6 @@ const createMissingProfile = async (req, res) => {
 
 module.exports = {
   createOrUpdateProfile,
-  testLogin,
   register,
   login,
   logout,

@@ -2,24 +2,22 @@ const { supabase } = require("../lib/SupabaseClient");
 
 const authMiddleware = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-
     console.log(
       "Auth middleware - Header received:",
-      authHeader ? "Present" : "Missing"
+      req.headers.authorization ? "Present" : "Missing"
     );
 
+    const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      console.log("Auth middleware - Invalid header format");
       return res.status(401).json({
         error: {
-          message: "Access token is required",
+          message: "Authorization header missing or invalid",
           code: "UNAUTHORIZED",
         },
       });
     }
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    const token = authHeader.substring(7);
     console.log("Auth middleware - Token extracted, length:", token.length);
 
     // Verify token with Supabase
@@ -29,9 +27,9 @@ const authMiddleware = async (req, res, next) => {
     } = await supabase.auth.getUser(token);
 
     if (error || !user) {
-      console.error(
+      console.log(
         "Auth middleware - Token verification failed:",
-        error?.message || "User not found"
+        error?.message
       );
       return res.status(401).json({
         error: {
@@ -45,22 +43,41 @@ const authMiddleware = async (req, res, next) => {
     console.log("Auth middleware - Request path:", req.path);
     console.log("Auth middleware - Request URL:", req.url);
 
-    // For create-missing-profile endpoint, we don't require existing profile
-    if (
-      req.path.includes("create-missing-profile") ||
-      req.url.includes("create-missing-profile")
-    ) {
+    // Set user in request
+    req.user = user;
+
+    // Skip profile check for specific endpoints that don't require profile
+    const skipProfileEndpoints = [
+      "create-missing-profile",
+      "profile",
+      "test-login",
+      "debug-users",
+    ];
+
+    // Debug logging for endpoint checking
+    console.log("Auth middleware - Checking endpoints for skip...");
+    const shouldSkipProfileCheck = skipProfileEndpoints.some((endpoint) => {
+      const pathCheck = req.path.includes(endpoint);
+      const urlCheck = req.url.includes(endpoint);
       console.log(
-        "Auth middleware - Skipping profile check for create-missing-profile"
+        `Auth middleware - Endpoint '${endpoint}': path.includes=${pathCheck}, url.includes=${urlCheck}`
       );
-      req.user = user;
-      req.profile = null;
+      return pathCheck || urlCheck;
+    });
+
+    console.log(
+      "Auth middleware - Should skip profile check:",
+      shouldSkipProfileCheck
+    );
+
+    if (shouldSkipProfileCheck) {
+      console.log("Auth middleware - Skipping profile check for:", req.path);
       return next();
     }
 
+    // For other endpoints, check if profile exists
     console.log("Auth middleware - Fetching profile for user:", user.id);
 
-    // Get user profile from profiles table
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("*")
@@ -68,47 +85,38 @@ const authMiddleware = async (req, res, next) => {
       .single();
 
     if (profileError) {
-      console.error("Auth middleware - Profile fetch error:", profileError);
-      console.error("Auth middleware - Profile error code:", profileError.code);
+      console.log("Auth middleware - Profile fetch error:", profileError);
+      console.log("Auth middleware - Profile error code:", profileError.code);
 
-      // If profile not found (PGRST116), return specific error
       if (profileError.code === "PGRST116") {
+        // Profile not found
         return res.status(404).json({
           error: {
             message:
-              "User profile not found. Please create your profile first.",
+              "User profile not found. Please complete your profile first.",
             code: "PROFILE_NOT_FOUND",
-            suggestion:
-              "Use /api/auth/create-missing-profile endpoint to create your profile.",
           },
         });
       }
 
-      return res.status(401).json({
+      return res.status(500).json({
         error: {
-          message: "User profile not found",
-          code: "PROFILE_NOT_FOUND",
+          message: "Failed to fetch user profile",
+          code: "PROFILE_FETCH_ERROR",
         },
       });
     }
 
-    console.log(
-      "Auth middleware - Profile found:",
-      profile.id,
-      profile.full_name
-    );
-
-    // Attach user and profile to request
-    req.user = user;
-    req.profile = profile;
+    console.log("Auth middleware - Profile found:", profile.id, profile.role);
+    req.user.profile = profile;
 
     next();
   } catch (error) {
     console.error("Auth middleware error:", error);
     return res.status(500).json({
       error: {
-        message: "Internal server error during authentication",
-        code: "INTERNAL_ERROR",
+        message: "Authentication middleware error",
+        code: "AUTH_MIDDLEWARE_ERROR",
       },
     });
   }
