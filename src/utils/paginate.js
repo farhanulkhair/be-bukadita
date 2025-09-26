@@ -6,19 +6,18 @@
  * @returns {object} Pagination metadata
  */
 const paginate = (totalCount, page = 1, limit = 10) => {
-  const totalPages = Math.ceil(totalCount / limit);
-  const hasNextPage = page < totalPages;
-  const hasPrevPage = page > 1;
-
+  const safePage = Math.max(1, parseInt(page, 10) || 1);
+  const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
+  const totalPages = Math.ceil(totalCount / safeLimit) || 0;
+  const hasNextPage = safePage < totalPages;
+  const hasPrevPage = safePage > 1;
   return {
-    currentPage: page,
+    page: safePage,
+    limit: safeLimit,
+    total: totalCount,
     totalPages,
-    totalCount,
-    limit,
     hasNextPage,
     hasPrevPage,
-    nextPage: hasNextPage ? page + 1 : null,
-    prevPage: hasPrevPage ? page - 1 : null,
   };
 };
 

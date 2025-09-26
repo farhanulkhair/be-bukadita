@@ -1,153 +1,735 @@
-const { supabase } = require("../lib/SupabaseClient");
+const { supabase, supabaseAdmin } = require("../lib/SupabaseClient");
 const { paginate } = require("../utils/paginate");
+const Joi = require("joi");
+const { success, failure } = require("../utils/respond");
 
-// GET /api/admin/users - Get all user profiles (admin only)
+// Helpers for safe cross-table ops (handle optional tables like 'admins')
+async function safeUpdateIfTableExists(client, table, matchCol, id, updates) {
+  try {
+    const { error } = await client.from(table).update(updates).eq(matchCol, id);
+    if (error) {
+      // Ignore missing relation error if table doesn't exist
+      if (
+        error.code === "42P01" ||
+        /relation .* does not exist/i.test(error.message)
+      ) {
+        return { ignored: true };
+      }
+      return { error };
+    }
+    return { data: true };
+  } catch (e) {
+    return { error: e };
+  }
+}
+
+async function safeDeleteIfTableExists(client, table, matchCol, id) {
+  try {
+    const { error } = await client.from(table).delete().eq(matchCol, id);
+    if (error) {
+      if (
+        error.code === "42P01" ||
+        /relation .* does not exist/i.test(error.message)
+      ) {
+        return { ignored: true };
+      }
+      return { error };
+    }
+    return { data: true };
+  } catch (e) {
+    return { error: e };
+  }
+}
+
+// Validation schemas
+const createUserSchema = Joi.object({
+  email: Joi.string().email().required().messages({
+    "string.email": "Email must be a valid email address",
+    "any.required": "Email is required",
+  }),
+  password: Joi.string().min(6).required().messages({
+    "string.min": "Password must be at least 6 characters long",
+    "any.required": "Password is required",
+  }),
+  full_name: Joi.string().min(2).max(100).required().messages({
+    "string.min": "Full name must be at least 2 characters long",
+    "string.max": "Full name must not exceed 100 characters",
+    "any.required": "Full name is required",
+  }),
+  phone: Joi.string()
+    .pattern(/^(\+62[8-9][\d]{8,11}|0[8-9][\d]{8,11})$/)
+    .optional()
+    .allow("")
+    .messages({
+      "string.pattern.base":
+        "Phone number must start with 08 and be 10-13 digits long (e.g., 08123456789)",
+    }),
+  role: Joi.string().valid("pengguna", "admin").default("pengguna"),
+});
+
+const updateUserSchema = Joi.object({
+  full_name: Joi.string().min(2).max(100).optional().messages({
+    "string.min": "Full name must be at least 2 characters long",
+    "string.max": "Full name must not exceed 100 characters",
+  }),
+  phone: Joi.string()
+    .pattern(/^(\+62[8-9][\d]{8,11}|0[8-9][\d]{8,11})$/)
+    .optional()
+    .allow("")
+    .messages({
+      "string.pattern.base":
+        "Phone number must start with 08 and be 10-13 digits long (e.g., 08123456789)",
+    }),
+  email: Joi.string().email().optional(),
+});
+
+// GET /api/admin/users - Get all user profiles (admin only) with role-aware visibility rules
+// Rules:
+// - superadmin: melihat semua akun role pengguna & admin (TIDAK termasuk dirinya sendiri & tidak menampilkan superadmin lain jika ada)
+// - admin biasa: hanya melihat akun role pengguna (tidak melihat admin lain maupun superadmin)
 const getAllUsers = async (req, res) => {
   try {
-    const { page = 1, limit = 10, role, search } = req.query;
+    const { page = 1, limit = 10, role: requestedRole, search } = req.query;
+    const client = supabaseAdmin || req.authenticatedClient || supabase;
 
-    let query = supabase
+    const callerRole =
+      req.user?.profile?.role || req.profile?.role || "pengguna";
+    const callerId = req.user?.id;
+
+    // Tentukan role yang DIIZINKAN untuk ditampilkan berdasarkan role caller
+    let allowedRoles = [];
+    if (callerRole === "superadmin") {
+      allowedRoles = ["pengguna", "admin"]; // superadmin tidak melihat superadmin termasuk dirinya
+    } else {
+      // role 'admin' (requireAdmin middleware sudah mencegah pengguna biasa)
+      allowedRoles = ["pengguna"]; // admin hanya boleh lihat pengguna
+    }
+
+    let query = client
       .from("profiles")
-      .select("id, full_name, phone, role, created_at", { count: "exact" });
+      .select("id, full_name, phone, email, role, created_at", {
+        count: "exact",
+      })
+      .in("role", allowedRoles);
 
-    // Filter by role if specified
-    if (role && ["pengguna", "admin"].includes(role)) {
-      query = query.eq("role", role);
+    // Superadmin: sembunyikan akun dirinya sendiri agar tidak bisa menghapus / mengubah diri secara tidak sengaja
+    if (callerRole === "superadmin" && callerId) {
+      query = query.neq("id", callerId);
     }
 
-    // Search by name or phone
+    // Jika front-end meminta filter role spesifik, pastikan masih dalam allowedRoles
+    if (requestedRole && allowedRoles.includes(requestedRole)) {
+      query = query.eq("role", requestedRole);
+    }
+
+    // Pencarian (nama / email / phone)
     if (search) {
-      query = query.or(`full_name.ilike.%${search}%, phone.ilike.%${search}%`);
+      const escaped = search.replace(/%/g, "");
+      query = query.or(
+        `full_name.ilike.%${escaped}%, email.ilike.%${escaped}%, phone.ilike.%${escaped}%`
+      );
     }
 
-    // Apply pagination
     const { data, error, count } = await query
       .order("created_at", { ascending: false })
       .range((page - 1) * limit, page * limit - 1);
 
     if (error) {
       console.error("Get users error:", error);
-      return res.status(500).json({
-        error: {
-          message: "Failed to fetch users",
-          code: "FETCH_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "ADMIN_USERS_FETCH_ERROR",
+        "Failed to fetch users",
+        500,
+        { details: error.message }
+      );
     }
 
-    const pagination = paginate(count, parseInt(page), parseInt(limit));
+    const pagination = paginate(
+      count || 0,
+      parseInt(page, 10),
+      parseInt(limit, 10)
+    );
+    return success(
+      res,
+      "ADMIN_USERS_FETCH_SUCCESS",
+      "Users retrieved successfully",
+      {
+        items: data,
+        pagination,
+        visibility: {
+          caller_role: callerRole,
+          allowed_roles: allowedRoles,
+          excluded_self: callerRole === "superadmin",
+        },
+        filters: {
+          role: requestedRole || undefined,
+          search: search || undefined,
+        },
+      }
+    );
+  } catch (e) {
+    console.error("GetAllUsers controller error:", e);
+    return failure(res, "ADMIN_INTERNAL_ERROR", "Internal server error", 500);
+  }
+};
 
-    res.status(200).json({
-      message: "Users retrieved successfully",
-      data,
-      pagination,
-    });
-  } catch (error) {
-    console.error("Admin controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
+// POST /api/admin/users - Create new user account (admin only)
+const createUser = async (req, res) => {
+  try {
+    // Validate request body
+    const { error: validationError, value } = createUserSchema.validate(
+      req.body
+    );
+    if (validationError) {
+      return failure(
+        res,
+        "ADMIN_USER_CREATE_VALIDATION_ERROR",
+        validationError.details[0].message,
+        422
+      );
+    }
+
+    const { email, password, full_name, phone, role } = value;
+
+    // Only superadmin can create another admin
+    const callerRole =
+      req.user?.profile?.role || req.profile?.role || "pengguna";
+    if (
+      (role === "admin" || role === "superadmin") &&
+      callerRole !== "superadmin"
+    ) {
+      return failure(
+        res,
+        "ADMIN_USER_CREATE_FORBIDDEN",
+        "Only superadmin can create admin accounts",
+        403
+      );
+    }
+
+    console.log("[ADMIN] Creating user:", { email, role });
+
+    // Create user with Supabase Admin (bypasses email confirmation)
+    const { data: authData, error: authError } =
+      await supabaseAdmin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true, // Auto-confirm email
+        user_metadata: {
+          full_name,
+          phone: phone || null,
+          role,
+        },
+      });
+
+    if (authError) {
+      console.error("User creation error:", authError);
+
+      if (authError.message.includes("already registered")) {
+        return failure(
+          res,
+          "ADMIN_USER_EMAIL_EXISTS",
+          "Email is already registered",
+          400
+        );
+      }
+
+      return failure(
+        res,
+        "ADMIN_USER_CREATE_ERROR",
+        "Failed to create user",
+        400,
+        { details: authError.message }
+      );
+    }
+
+    // Ensure profile exists: trigger may have inserted it; update if exists, otherwise insert
+    const userId = authData.user.id;
+    const now = new Date().toISOString();
+
+    // Try to fetch existing profile
+    const { data: existingProfile, error: profileFetchError } =
+      await supabaseAdmin
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .single();
+
+    let profileData;
+    if (profileFetchError) {
+      // If not found (PGRST116), insert new profile. Otherwise, treat as unexpected error
+      if (profileFetchError.code === "PGRST116") {
+        const { data: insertedProfile, error: profileInsertError } =
+          await supabaseAdmin
+            .from("profiles")
+            .insert({
+              id: userId,
+              full_name,
+              phone: phone || null,
+              email: authData.user.email,
+              role,
+              created_at: now,
+              updated_at: now,
+            })
+            .select()
+            .single();
+        if (profileInsertError) {
+          // Fallback: retry without role column if schema lacks it (test env / migration lag)
+          if (
+            profileInsertError.code === "PGRST204" &&
+            /'role' column/i.test(profileInsertError.message)
+          ) {
+            const { data: fallbackProfile, error: fbErr } = await supabaseAdmin
+              .from("profiles")
+              .insert({
+                id: userId,
+                full_name,
+                phone: phone || null,
+                email: authData.user.email,
+                created_at: now,
+                updated_at: now,
+              })
+              .select()
+              .single();
+            if (fbErr) {
+              console.error("Profile insert fallback error:", fbErr);
+              await supabaseAdmin.auth.admin.deleteUser(userId);
+              return failure(
+                res,
+                "ADMIN_PROFILE_CREATE_ERROR",
+                "Failed to create user profile",
+                500,
+                { details: fbErr.message }
+              );
+            }
+            profileData = fallbackProfile;
+          } else {
+            console.error("Profile insert error:", profileInsertError);
+            await supabaseAdmin.auth.admin.deleteUser(userId);
+            return failure(
+              res,
+              "ADMIN_PROFILE_CREATE_ERROR",
+              "Failed to create user profile",
+              500,
+              { details: profileInsertError.message }
+            );
+          }
+        } else {
+          profileData = insertedProfile;
+        }
+      } else {
+        console.error("Profile fetch error:", profileFetchError);
+        // Rollback auth user to maintain consistency
+        await supabaseAdmin.auth.admin.deleteUser(userId);
+        return failure(
+          res,
+          "ADMIN_PROFILE_VERIFY_ERROR",
+          "Failed to verify user profile",
+          500,
+          { details: profileFetchError.message }
+        );
+      }
+    } else {
+      // Profile exists (likely from trigger) — update with provided fields to ensure consistency
+      const { data: updatedProfile, error: profileUpdateError } =
+        await supabaseAdmin
+          .from("profiles")
+          .update({
+            full_name,
+            phone: phone || null,
+            email: authData.user.email,
+            role,
+            updated_at: now,
+          })
+          .eq("id", userId)
+          .select()
+          .single();
+      if (profileUpdateError) {
+        if (
+          profileUpdateError.code === "PGRST204" &&
+          /'role' column/i.test(profileUpdateError.message)
+        ) {
+          // Retry without role field
+          const { data: fallbackUpdated, error: fbUpdErr } = await supabaseAdmin
+            .from("profiles")
+            .update({
+              full_name,
+              phone: phone || null,
+              email: authData.user.email,
+              updated_at: now,
+            })
+            .eq("id", userId)
+            .select()
+            .single();
+          if (fbUpdErr) {
+            console.error("Profile update fallback error:", fbUpdErr);
+            return failure(
+              res,
+              "ADMIN_PROFILE_UPDATE_ERROR",
+              "Failed to update user profile",
+              500,
+              { details: fbUpdErr.message }
+            );
+          }
+          profileData = fallbackUpdated || existingProfile;
+        } else {
+          console.error("Profile update error:", profileUpdateError);
+          return failure(
+            res,
+            "ADMIN_PROFILE_UPDATE_ERROR",
+            "Failed to update user profile",
+            500,
+            { details: profileUpdateError.message }
+          );
+        }
+      } else {
+        profileData = updatedProfile || existingProfile;
+      }
+    }
+
+    try {
+      const normalizedRole = role === "admin" ? "admin" : null;
+      if (normalizedRole) {
+        const { error: metaErr } =
+          await supabaseAdmin.auth.admin.updateUserById(userId, {
+            app_metadata: { role: normalizedRole },
+          });
+        if (metaErr)
+          console.warn(
+            "[ADMIN] app_metadata.role sync failed:",
+            metaErr.message
+          );
+      }
+    } catch (e) {
+      console.warn("[ADMIN] app_metadata.role sync exception:", e.message);
+    }
+
+    return success(
+      res,
+      "ADMIN_USER_CREATE_SUCCESS",
+      "User created successfully",
+      {
+        id: authData.user.id,
+        email: authData.user.email,
+        email_confirmed_at: authData.user.email_confirmed_at,
+        profile: profileData,
       },
+      201
+    );
+  } catch (e) {
+    console.error("Create user error:", e);
+    return failure(res, "ADMIN_INTERNAL_ERROR", "Internal server error", 500, {
+      details: e.message,
     });
+  }
+};
+
+// GET /api/admin/users/:id - Get user by ID (admin only)
+const getUserById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get user profile
+    const client = supabaseAdmin || req.authenticatedClient || supabase;
+    const { data: profileData, error: profileError } = await client
+      .from("profiles")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (profileError) {
+      if (profileError.code === "PGRST116") {
+        return failure(res, "ADMIN_USER_NOT_FOUND", "User not found", 404);
+      }
+      return failure(
+        res,
+        "ADMIN_USER_FETCH_ERROR",
+        "Failed to fetch user",
+        500,
+        { details: profileError.message }
+      );
+    }
+
+    // Get auth user details (requires admin privileges)
+    const { data: authUser, error: authError } =
+      await supabaseAdmin.auth.admin.getUserById(id);
+
+    if (authError)
+      console.warn("[ADMIN] auth user fetch warn:", authError.message);
+
+    return success(
+      res,
+      "ADMIN_USER_DETAIL_SUCCESS",
+      "User retrieved successfully",
+      {
+        id: profileData.id,
+        email: profileData.email,
+        email_confirmed_at: authUser?.user?.email_confirmed_at || null,
+        last_sign_in_at: authUser?.user?.last_sign_in_at || null,
+        created_at: authUser?.user?.created_at || profileData.created_at,
+        profile: profileData,
+      }
+    );
+  } catch (e) {
+    console.error("Get user by ID error:", e);
+    return failure(res, "ADMIN_INTERNAL_ERROR", "Internal server error", 500);
+  }
+};
+
+// PUT /api/admin/users/:id - Update user profile (admin only)
+const updateUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Validate request body
+    const { error: validationError, value } = updateUserSchema.validate(
+      req.body
+    );
+    if (validationError) {
+      return failure(
+        res,
+        "ADMIN_USER_UPDATE_VALIDATION_ERROR",
+        validationError.details[0].message,
+        422
+      );
+    }
+
+    const { full_name, phone, email } = value;
+
+    console.log("Admin updating user:", { id, full_name, phone, email });
+    console.log("Admin user:", req.user.id, req.user.profile?.role);
+
+    // Use service role for admin updates
+    const client = supabaseAdmin || req.authenticatedClient || supabase;
+
+    // Check if user exists
+    const { data: existingUser, error: fetchError } = await client
+      .from("profiles")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (fetchError) {
+      console.error("Fetch user error:", fetchError);
+      if (fetchError.code === "PGRST116") {
+        return failure(res, "ADMIN_USER_NOT_FOUND", "User not found", 404);
+      }
+      return failure(
+        res,
+        "ADMIN_USER_FETCH_ERROR",
+        "Failed to fetch user",
+        500,
+        { details: fetchError.message }
+      );
+    }
+
+    console.log("Existing user found:", existingUser);
+
+    // Prepare update data
+    const updateData = {};
+    if (full_name !== undefined) updateData.full_name = full_name;
+    if (phone !== undefined) updateData.phone = phone || null;
+    if (email !== undefined) updateData.email = email;
+
+    // Add updated_at timestamp
+    updateData.updated_at = new Date().toISOString();
+
+    console.log("Update data:", updateData);
+
+    // Update profile using service role client
+    const { data: updatedProfile, error: updateError } = await client
+      .from("profiles")
+      .update(updateData)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (updateError) {
+      return failure(
+        res,
+        "ADMIN_USER_UPDATE_ERROR",
+        "Failed to update user",
+        500,
+        { details: updateError.message }
+      );
+    }
+
+    return success(
+      res,
+      "ADMIN_USER_UPDATE_SUCCESS",
+      "User updated successfully",
+      updatedProfile
+    );
+  } catch (e) {
+    console.error("Update user error:", e);
+    return failure(res, "ADMIN_INTERNAL_ERROR", "Internal server error", 500);
+  }
+};
+
+// DELETE /api/admin/users/:id - Delete user account (admin only)
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const mode = (req.query.mode || req.body?.mode || "hard")
+      .toString()
+      .toLowerCase();
+
+    // Prevent admin from deleting their own account
+    if (id === req.user.id) {
+      return failure(
+        res,
+        "ADMIN_USER_DELETE_FORBIDDEN",
+        "Cannot delete your own account",
+        400
+      );
+    }
+
+    // Check if user exists
+    const client = supabaseAdmin || req.authenticatedClient || supabase;
+    const { data: existingUser, error: fetchError } = await client
+      .from("profiles")
+      .select("id")
+      .eq("id", id)
+      .single();
+    if (fetchError) {
+      if (fetchError.code === "PGRST116")
+        return failure(res, "ADMIN_USER_NOT_FOUND", "User not found", 404);
+      return failure(
+        res,
+        "ADMIN_USER_FETCH_ERROR",
+        "Failed to fetch user",
+        500,
+        { details: fetchError.message }
+      );
+    }
+
+    if (mode === "soft") {
+      // Soft delete: mark inactive and set deleted_at in profiles (+ optional admins)
+      const now = new Date().toISOString();
+      const { error: softErr } = await (supabaseAdmin || client)
+        .from("profiles")
+        .update({ is_active: false, deleted_at: now, updated_at: now })
+        .eq("id", id);
+      if (softErr) {
+        return failure(
+          res,
+          "ADMIN_USER_SOFT_DELETE_ERROR",
+          "Soft delete failed",
+          500,
+          { details: softErr.message }
+        );
+      }
+
+      // Optional related table: admins (if exists), assume user_id FK
+      await safeUpdateIfTableExists(
+        supabaseAdmin || client,
+        "admins",
+        "user_id",
+        id,
+        { is_active: false, deleted_at: now }
+      );
+
+      return success(
+        res,
+        "ADMIN_USER_SOFT_DELETE_SUCCESS",
+        "User soft-deleted successfully",
+        { id, mode: "soft" }
+      );
+    }
+
+    // Hard delete: clean optional related table then remove auth user (cascade)
+    await safeDeleteIfTableExists(
+      supabaseAdmin || client,
+      "admins",
+      "user_id",
+      id
+    );
+    const { error: deleteError } = await (
+      supabaseAdmin || client
+    ).auth.admin.deleteUser(id);
+    if (deleteError) {
+      return failure(
+        res,
+        "ADMIN_USER_DELETE_ERROR",
+        "Failed to delete user",
+        500,
+        { details: deleteError.message }
+      );
+    }
+    return success(
+      res,
+      "ADMIN_USER_DELETE_SUCCESS",
+      "User deleted successfully",
+      { id, mode: "hard" }
+    );
+  } catch (e) {
+    console.error("Delete user error:", e);
+    return failure(res, "ADMIN_INTERNAL_ERROR", "Internal server error", 500);
   }
 };
 
 // GET /api/admin/dashboard/stats - Get dashboard statistics (admin only)
 const getDashboardStats = async (req, res) => {
   try {
-    // Get user counts
-    const { data: userStats, error: userError } = await supabase
+    const client = req.authenticatedClient || supabase;
+    const stats = {};
+
+    // Collect counts sequentially (can optimize later with Promise.all)
+    const { data: roles, error: rolesErr } = await client
       .from("profiles")
       .select("role", { count: "exact" });
+    if (rolesErr) console.warn("[ADMIN] user stats warn:", rolesErr.message);
 
-    if (userError) {
-      console.error("Get user stats error:", userError);
-    }
+    const totalUsers = roles?.length || 0;
+    stats.users = {
+      total: totalUsers,
+      admin: roles?.filter((r) => r.role === "admin").length || 0,
+      regular: roles?.filter((r) => r.role === "pengguna").length || 0,
+    };
 
-    const totalUsers = userStats?.length || 0;
-    const adminUsers = userStats?.filter((u) => u.role === "admin").length || 0;
-    const regularUsers =
-      userStats?.filter((u) => u.role === "pengguna").length || 0;
-
-    // Get materials count
-    const { count: materialsCount, error: materialsError } = await supabase
+    const { count: materialsCount } = await client
       .from("materials")
       .select("*", { count: "exact", head: true });
+    const { count: publishedMaterialsCount } = await client
+      .from("materials")
+      .select("*", { count: "exact", head: true })
+      .eq("published", true);
+    stats.materials = {
+      total: materialsCount || 0,
+      published: publishedMaterialsCount || 0,
+      draft: (materialsCount || 0) - (publishedMaterialsCount || 0),
+    };
 
-    if (materialsError) {
-      console.error("Get materials count error:", materialsError);
-    }
-
-    // Get published materials count
-    const { count: publishedMaterialsCount, error: publishedError } =
-      await supabase
-        .from("materials")
-        .select("*", { count: "exact", head: true })
-        .eq("published", true);
-
-    if (publishedError) {
-      console.error("Get published materials count error:", publishedError);
-    }
-
-    // Get quizzes count
-    const { count: quizzesCount, error: quizzesError } = await supabase
+    const { count: quizzesCount } = await client
       .from("quizzes")
       .select("*", { count: "exact", head: true });
+    const { count: quizSubmissionsCount } = await client
+      .from("quiz_results")
+      .select("*", { count: "exact", head: true });
+    stats.quizzes = {
+      total: quizzesCount || 0,
+      submissions: quizSubmissionsCount || 0,
+    };
 
-    if (quizzesError) {
-      console.error("Get quizzes count error:", quizzesError);
-    }
-
-    // Get schedules count
-    const { count: schedulesCount, error: schedulesError } = await supabase
+    const { count: schedulesCount } = await client
       .from("posyandu_schedules")
       .select("*", { count: "exact", head: true });
+    stats.schedules = { total: schedulesCount || 0 };
 
-    if (schedulesError) {
-      console.error("Get schedules count error:", schedulesError);
-    }
-
-    // Get quiz results count (total submissions)
-    const { count: quizSubmissionsCount, error: submissionsError } =
-      await supabase
-        .from("quiz_results")
-        .select("*", { count: "exact", head: true });
-
-    if (submissionsError) {
-      console.error("Get quiz submissions count error:", submissionsError);
-    }
-
-    res.status(200).json({
-      message: "Dashboard statistics retrieved successfully",
-      data: {
-        users: {
-          total: totalUsers,
-          admin: adminUsers,
-          regular: regularUsers,
-        },
-        materials: {
-          total: materialsCount || 0,
-          published: publishedMaterialsCount || 0,
-          draft: (materialsCount || 0) - (publishedMaterialsCount || 0),
-        },
-        quizzes: {
-          total: quizzesCount || 0,
-          submissions: quizSubmissionsCount || 0,
-        },
-        schedules: {
-          total: schedulesCount || 0,
-        },
-      },
-    });
-  } catch (error) {
-    console.error("Admin controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
-      },
-    });
+    return success(
+      res,
+      "ADMIN_STATS_SUCCESS",
+      "Dashboard statistics retrieved successfully",
+      stats
+    );
+  } catch (e) {
+    console.error("Admin stats error:", e);
+    return failure(
+      res,
+      "ADMIN_STATS_ERROR",
+      "Failed to retrieve statistics",
+      500
+    );
   }
 };
 
@@ -155,64 +737,53 @@ const getDashboardStats = async (req, res) => {
 const getAllQuizResults = async (req, res) => {
   try {
     const { page = 1, limit = 10, quiz_id, user_id } = req.query;
+    const client = req.authenticatedClient || supabase;
 
-    let query = supabase.from("quiz_results").select(
-      `
-        id,
-        score,
-        taken_at,
-        profiles:user_id (
-          id,
-          full_name
-        ),
-        quizzes:quiz_id (
-          id,
-          title
-        )
-      `,
-      { count: "exact" }
-    );
+    let query = client
+      .from("quiz_results")
+      .select(
+        `id, score, taken_at, profiles:user_id ( id, full_name ), quizzes:quiz_id ( id, title )`,
+        { count: "exact" }
+      );
+    if (quiz_id) query = query.eq("quiz_id", quiz_id);
+    if (user_id) query = query.eq("user_id", user_id);
 
-    // Filter by quiz if specified
-    if (quiz_id) {
-      query = query.eq("quiz_id", quiz_id);
-    }
-
-    // Filter by user if specified
-    if (user_id) {
-      query = query.eq("user_id", user_id);
-    }
-
-    // Apply pagination
     const { data, error, count } = await query
       .order("taken_at", { ascending: false })
       .range((page - 1) * limit, page * limit - 1);
 
     if (error) {
       console.error("Get quiz results error:", error);
-      return res.status(500).json({
-        error: {
-          message: "Failed to fetch quiz results",
-          code: "FETCH_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "ADMIN_QUIZ_RESULTS_FETCH_ERROR",
+        "Failed to fetch quiz results",
+        500,
+        { details: error.message }
+      );
     }
 
-    const pagination = paginate(count, parseInt(page), parseInt(limit));
-
-    res.status(200).json({
-      message: "Quiz results retrieved successfully",
-      data,
-      pagination,
-    });
-  } catch (error) {
-    console.error("Admin controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
-      },
-    });
+    const pagination = paginate(
+      count || 0,
+      parseInt(page, 10),
+      parseInt(limit, 10)
+    );
+    return success(
+      res,
+      "ADMIN_QUIZ_RESULTS_FETCH_SUCCESS",
+      "Quiz results retrieved successfully",
+      {
+        items: data,
+        pagination,
+        filters: {
+          quiz_id: quiz_id || undefined,
+          user_id: user_id || undefined,
+        },
+      }
+    );
+  } catch (e) {
+    console.error("Quiz results error:", e);
+    return failure(res, "ADMIN_INTERNAL_ERROR", "Internal server error", 500);
   }
 };
 
@@ -220,46 +791,52 @@ const getAllQuizResults = async (req, res) => {
 const updateUserRole = async (req, res) => {
   try {
     const { id } = req.params;
-    const { role } = req.body;
+    const { role } = req.body || {};
 
-    // Validate role
     if (!role || !["pengguna", "admin"].includes(role)) {
-      return res.status(400).json({
-        error: {
-          message: 'Invalid role. Must be "pengguna" or "admin"',
-          code: "VALIDATION_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "ADMIN_USER_ROLE_VALIDATION_ERROR",
+        'Invalid role. Must be "pengguna" or "admin"',
+        422
+      );
     }
 
-    // Check if user exists
-    const { data: existingUser, error: fetchError } = await supabase
+    const callerRole =
+      req.user?.profile?.role || req.profile?.role || "pengguna";
+    if (
+      (role === "admin" || role === "superadmin") &&
+      callerRole !== "superadmin"
+    ) {
+      return failure(
+        res,
+        "ADMIN_USER_ROLE_FORBIDDEN",
+        "Only superadmin can assign admin roles",
+        403
+      );
+    }
+
+    const client = supabaseAdmin || req.authenticatedClient || supabase;
+    const { data: existingUser, error: fetchError } = await client
       .from("profiles")
       .select("id, role")
       .eq("id", id)
       .single();
 
     if (fetchError || !existingUser) {
-      return res.status(404).json({
-        error: {
-          message: "User not found",
-          code: "NOT_FOUND",
-        },
-      });
+      return failure(res, "ADMIN_USER_NOT_FOUND", "User not found", 404);
     }
 
-    // Prevent changing own role
     if (id === req.user.id) {
-      return res.status(400).json({
-        error: {
-          message: "Cannot change your own role",
-          code: "INVALID_OPERATION",
-        },
-      });
+      return failure(
+        res,
+        "ADMIN_USER_ROLE_SELF_FORBIDDEN",
+        "Cannot change your own role",
+        400
+      );
     }
 
-    // Update role
-    const { data, error: updateError } = await supabase
+    const { data, error: updateError } = await client
       .from("profiles")
       .update({ role })
       .eq("id", id)
@@ -268,32 +845,51 @@ const updateUserRole = async (req, res) => {
 
     if (updateError) {
       console.error("Update user role error:", updateError);
-      return res.status(500).json({
-        error: {
-          message: "Failed to update user role",
-          code: "UPDATE_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "ADMIN_USER_ROLE_UPDATE_ERROR",
+        "Failed to update user role",
+        500,
+        { details: updateError.message }
+      );
     }
 
-    res.status(200).json({
-      message: "User role updated successfully",
-      data,
-    });
-  } catch (error) {
-    console.error("Admin controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
-      },
-    });
+    try {
+      const normalizedRole = role === "admin" ? "admin" : null;
+      const payload = normalizedRole
+        ? { app_metadata: { role: normalizedRole } }
+        : { app_metadata: { role: null } };
+      const { error: updErr } = await supabaseAdmin.auth.admin.updateUserById(
+        id,
+        payload
+      );
+      if (updErr)
+        console.warn("[ADMIN] app_metadata.role update warn:", updErr.message);
+    } catch (e) {
+      console.warn("[ADMIN] app_metadata.role update exception:", e.message);
+    }
+
+    return success(
+      res,
+      "ADMIN_USER_ROLE_UPDATE_SUCCESS",
+      "User role updated successfully",
+      data
+    );
+  } catch (e) {
+    console.error("Admin controller error:", e);
+    return failure(res, "ADMIN_INTERNAL_ERROR", "Internal server error", 500);
   }
 };
 
 module.exports = {
   getAllUsers,
+  createUser,
+  getUserById,
+  updateUser,
+  deleteUser,
   getDashboardStats,
   getAllQuizResults,
   updateUserRole,
+  inviteAdmin: createUser,
+  getSystemStats: getDashboardStats,
 };

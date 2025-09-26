@@ -1,5 +1,5 @@
-const { supabase } = require("../lib/SupabaseClient");
 const Joi = require("joi");
+const { success, failure } = require("../utils/respond");
 
 // Validation schemas
 const scheduleSchema = Joi.object({
@@ -19,7 +19,8 @@ const scheduleUpdateSchema = Joi.object({
 // GET /api/pengguna/schedules - Get all schedules (public)
 const getAllSchedules = async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const sb = req.supabase; // injected by supabase-middleware
+    const { data, error } = await sb
       .from("posyandu_schedules")
       .select(
         `
@@ -38,26 +39,29 @@ const getAllSchedules = async (req, res) => {
 
     if (error) {
       console.error("Get schedules error:", error);
-      return res.status(500).json({
-        error: {
-          message: "Failed to fetch schedules",
-          code: "FETCH_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "SCHEDULE_FETCH_ERROR",
+        "Failed to fetch schedules",
+        500,
+        { details: error.message }
+      );
     }
 
-    res.status(200).json({
-      message: "Schedules retrieved successfully",
-      data,
-    });
+    return success(
+      res,
+      "SCHEDULE_FETCH_SUCCESS",
+      "Schedules retrieved successfully",
+      { items: data }
+    );
   } catch (error) {
     console.error("Schedule controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
-      },
-    });
+    return failure(
+      res,
+      "SCHEDULE_INTERNAL_ERROR",
+      "Internal server error",
+      500
+    );
   }
 };
 
@@ -66,18 +70,19 @@ const createSchedule = async (req, res) => {
   try {
     const { error, value } = scheduleSchema.validate(req.body);
     if (error) {
-      return res.status(400).json({
-        error: {
-          message: error.details[0].message,
-          code: "VALIDATION_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "SCHEDULE_VALIDATION_ERROR",
+        error.details[0].message,
+        400
+      );
     }
 
     const { title, description, location, date } = value;
     const createdBy = req.user.id;
 
-    const { data, error: insertError } = await supabase
+    const sb = req.supabase;
+    const { data, error: insertError } = await sb
       .from("posyandu_schedules")
       .insert({
         title,
@@ -103,26 +108,30 @@ const createSchedule = async (req, res) => {
 
     if (insertError) {
       console.error("Create schedule error:", insertError);
-      return res.status(500).json({
-        error: {
-          message: "Failed to create schedule",
-          code: "CREATION_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "SCHEDULE_CREATE_ERROR",
+        "Failed to create schedule",
+        500,
+        { details: insertError.message }
+      );
     }
 
-    res.status(201).json({
-      message: "Schedule created successfully",
+    return success(
+      res,
+      "SCHEDULE_CREATE_SUCCESS",
+      "Schedule created successfully",
       data,
-    });
+      201
+    );
   } catch (error) {
     console.error("Schedule controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
-      },
-    });
+    return failure(
+      res,
+      "SCHEDULE_INTERNAL_ERROR",
+      "Internal server error",
+      500
+    );
   }
 };
 
@@ -133,31 +142,27 @@ const updateSchedule = async (req, res) => {
 
     const { error, value } = scheduleUpdateSchema.validate(req.body);
     if (error) {
-      return res.status(400).json({
-        error: {
-          message: error.details[0].message,
-          code: "VALIDATION_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "SCHEDULE_VALIDATION_ERROR",
+        error.details[0].message,
+        400
+      );
     }
 
     // Check if schedule exists
-    const { data: existingSchedule, error: fetchError } = await supabase
+    const sb = req.supabase;
+    const { data: existingSchedule, error: fetchError } = await sb
       .from("posyandu_schedules")
       .select("id")
       .eq("id", id)
       .single();
 
     if (fetchError || !existingSchedule) {
-      return res.status(404).json({
-        error: {
-          message: "Schedule not found",
-          code: "NOT_FOUND",
-        },
-      });
+      return failure(res, "SCHEDULE_NOT_FOUND", "Schedule not found", 404);
     }
 
-    const { data, error: updateError } = await supabase
+    const { data, error: updateError } = await sb
       .from("posyandu_schedules")
       .update(value)
       .eq("id", id)
@@ -178,26 +183,29 @@ const updateSchedule = async (req, res) => {
 
     if (updateError) {
       console.error("Update schedule error:", updateError);
-      return res.status(500).json({
-        error: {
-          message: "Failed to update schedule",
-          code: "UPDATE_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "SCHEDULE_UPDATE_ERROR",
+        "Failed to update schedule",
+        500,
+        { details: updateError.message }
+      );
     }
 
-    res.status(200).json({
-      message: "Schedule updated successfully",
-      data,
-    });
+    return success(
+      res,
+      "SCHEDULE_UPDATE_SUCCESS",
+      "Schedule updated successfully",
+      data
+    );
   } catch (error) {
     console.error("Schedule controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
-      },
-    });
+    return failure(
+      res,
+      "SCHEDULE_INTERNAL_ERROR",
+      "Internal server error",
+      500
+    );
   }
 };
 
@@ -207,47 +215,46 @@ const deleteSchedule = async (req, res) => {
     const { id } = req.params;
 
     // Check if schedule exists
-    const { data: existingSchedule, error: fetchError } = await supabase
+    const sb = req.supabase;
+    const { data: existingSchedule, error: fetchError } = await sb
       .from("posyandu_schedules")
       .select("id")
       .eq("id", id)
       .single();
 
     if (fetchError || !existingSchedule) {
-      return res.status(404).json({
-        error: {
-          message: "Schedule not found",
-          code: "NOT_FOUND",
-        },
-      });
+      return failure(res, "SCHEDULE_NOT_FOUND", "Schedule not found", 404);
     }
 
-    const { error: deleteError } = await supabase
+    const { error: deleteError } = await sb
       .from("posyandu_schedules")
       .delete()
       .eq("id", id);
 
     if (deleteError) {
       console.error("Delete schedule error:", deleteError);
-      return res.status(500).json({
-        error: {
-          message: "Failed to delete schedule",
-          code: "DELETE_ERROR",
-        },
-      });
+      return failure(
+        res,
+        "SCHEDULE_DELETE_ERROR",
+        "Failed to delete schedule",
+        500,
+        { details: deleteError.message }
+      );
     }
 
-    res.status(200).json({
-      message: "Schedule deleted successfully",
-    });
+    return success(
+      res,
+      "SCHEDULE_DELETE_SUCCESS",
+      "Schedule deleted successfully"
+    );
   } catch (error) {
     console.error("Schedule controller error:", error);
-    res.status(500).json({
-      error: {
-        message: "Internal server error",
-        code: "INTERNAL_ERROR",
-      },
-    });
+    return failure(
+      res,
+      "SCHEDULE_INTERNAL_ERROR",
+      "Internal server error",
+      500
+    );
   }
 };
 

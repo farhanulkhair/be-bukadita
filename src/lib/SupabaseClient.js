@@ -1,27 +1,23 @@
-const { createClient } = require('@supabase/supabase-js');
+const { createClient } = require("@supabase/supabase-js");
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const anonKey = process.env.SUPABASE_ANON_KEY;
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Supabase URL and Anon Key must be provided');
+if (!supabaseUrl || !anonKey) {
+  throw new Error("Supabase URL and SUPABASE_ANON_KEY must be provided");
 }
 
-// Client for public operations (with RLS)
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Base anon client (no user auth) for public / server tasks that still respect RLS
+const supabaseAnon = createClient(supabaseUrl, anonKey, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
 
-// Admin client for server-side operations (bypass RLS) - use with caution
-const supabaseAdmin = supabaseServiceKey 
-  ? createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
+// Service-role client for privileged server operations (bypass RLS). NEVER expose to client.
+const supabaseAdmin = serviceKey
+  ? createClient(supabaseUrl, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
     })
   : null;
 
-module.exports = {
-  supabase,
-  supabaseAdmin
-};
+module.exports = { supabaseAnon, supabaseAdmin };

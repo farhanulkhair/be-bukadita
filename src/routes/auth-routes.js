@@ -1,7 +1,6 @@
 const express = require("express");
 const {
   createOrUpdateProfile,
-  testLogin,
   register,
   login,
   logout,

@@ -15,28 +15,54 @@ All protected endpoints require Bearer token in Authorization header:
 Authorization: Bearer <access_token>
 ```
 
-## Response Format
+## Response Format (Standardized)
 
-All responses follow this format:
+All responses now use a unified envelope:
 
 ```json
 {
-  "message": "Success/Error message",
-  "data": {}, // Response data (optional)
-  "error": {
-    // Error details (only on errors)
-    "message": "Error description",
-    "code": "ERROR_CODE"
-  },
-  "pagination": {} // Pagination info (for paginated endpoints)
+  "error": false,
+  "code": "MATERIAL_FETCH_SUCCESS",
+  "message": "Materials retrieved successfully",
+  "data": {
+    "items": [{ "id": "uuid", "title": "..." }],
+    "pagination": {
+      "page": 1,
+      "limit": 10,
+      "total": 25,
+      "totalPages": 3,
+      "hasNextPage": true,
+      "hasPrevPage": false
+    }
+  }
 }
 ```
+
+Error example:
+
+```json
+{
+  "error": true,
+  "code": "MATERIAL_NOT_FOUND",
+  "message": "Material not found"
+}
+```
+
+Key rules:
+
+- `error`: boolean (false on success, true on failure)
+- `code`: MACHINE_READABLE_CODE in UPPER_SNAKE_CASE (e.g. `AUTH_LOGIN_SUCCESS`, `QUIZ_ATTEMPT_SUCCESS`, `ADMIN_USER_CREATE_ERROR`)
+- `message`: Human-readable description
+- `data`: Optional payload (object). For list endpoints includes `items` + optional `pagination` and `filters`.
+- Pagination object keys are now: `page`, `limit`, `total`, `totalPages`, `hasNextPage`, `hasPrevPage`.
+
+Legacy documentation sections below may still show the old shape (`message`, nested `error` object). These will be updated progressively; backend already emits the new format.
 
 ---
 
 ## Authentication Endpoints
 
-### POST /api/auth/register
+### POST /api/v1/auth/register
 
 Register new user with email and password.
 
@@ -91,7 +117,7 @@ Register new user with email and password.
 }
 ```
 
-### POST /api/auth/login
+### POST /api/v1/auth/login
 
 Login with email and password.
 
@@ -133,7 +159,7 @@ Login with email and password.
 }
 ```
 
-### POST /api/auth/logout
+### POST /api/v1/auth/logout
 
 Logout user and invalidate token.
 
@@ -153,7 +179,7 @@ Logout user and invalidate token.
 }
 ```
 
-### POST /api/auth/create-missing-profile
+### POST /api/v1/auth/create-missing-profile
 
 Create profile for authenticated user if missing (useful for users created via other methods).
 
@@ -201,7 +227,7 @@ Create profile for authenticated user if missing (useful for users created via o
 }
 ```
 
-### POST /api/auth/profile
+### POST /api/v1/auth/profile
 
 Create or update user profile after Google sign-in (legacy endpoint for OAuth).
 
@@ -239,16 +265,16 @@ Create or update user profile after Google sign-in (legacy endpoint for OAuth).
 
 ### Option 1: Manual Email/Password Authentication
 
-1. **Register**: `POST /api/auth/register` with email, password, full_name
-2. **Login**: `POST /api/auth/login` with email, password
+1. **Register**: `POST /api/v1/auth/register` with email, password, full_name
+2. **Login**: `POST /api/v1/auth/login` with email, password
 3. **Use Token**: Include access_token in Authorization header for protected endpoints
-4. **Logout**: `POST /api/auth/logout` to invalidate token
+4. **Logout**: `POST /api/v1/auth/logout` to invalidate token
 
 ### Option 2: Google OAuth Authentication (Legacy)
 
 1. **Frontend**: User signs in with Google via Supabase client
 2. **Frontend**: Obtains access_token from Supabase
-3. **Backend**: Call `POST /api/auth/profile` to create/update profile
+3. **Backend**: Call `POST /api/v1/auth/profile` to create/update profile
 4. **Frontend**: Use token for subsequent requests
 
 ### Error Responses for Authentication
@@ -305,7 +331,7 @@ Create or update user profile after Google sign-in (legacy endpoint for OAuth).
 
 ## Pengguna Endpoints
 
-### GET /api/pengguna/schedules
+### GET /api/v1/schedules
 
 Get all posyandu schedules (public access).
 
@@ -338,7 +364,7 @@ Get all posyandu schedules (public access).
 }
 ```
 
-### GET /api/pengguna/materials
+### GET /api/v1/materials
 
 Get all published materials.
 
@@ -372,7 +398,7 @@ Get all published materials.
 }
 ```
 
-### GET /api/pengguna/materials/:id
+### GET /api/v1/materials/:id
 
 Get material by ID.
 
@@ -404,7 +430,7 @@ Get material by ID.
 }
 ```
 
-### GET /api/pengguna/quizzes
+### GET /api/v1/quizzes
 
 Get all quizzes.
 
@@ -435,7 +461,7 @@ Get all quizzes.
 }
 ```
 
-### GET /api/pengguna/quizzes/:id
+### GET /api/v1/quizzes/:id
 
 Get quiz with questions and choices.
 
@@ -474,7 +500,7 @@ Get quiz with questions and choices.
 }
 ```
 
-### POST /api/pengguna/quizzes/:quizId/submit
+### POST /api/v1/quizzes/:quizId/submit
 
 Submit quiz answers.
 
@@ -525,7 +551,7 @@ Submit quiz answers.
 
 All admin endpoints require `role: 'admin'` in user profile.
 
-### GET /api/admin/dashboard/stats
+### GET /api/v1/admin/dashboard/stats
 
 Get dashboard statistics.
 
@@ -560,7 +586,7 @@ Get dashboard statistics.
 }
 ```
 
-### GET /api/admin/users
+### GET /api/v1/admin/users
 
 Get all user profiles with pagination.
 
@@ -602,7 +628,7 @@ Get all user profiles with pagination.
 }
 ```
 
-### PUT /api/admin/users/:id/role
+### PUT /api/v1/admin/users/:id/role
 
 Update user role.
 
@@ -638,7 +664,7 @@ Update user role.
 }
 ```
 
-### POST /api/admin/schedules
+### POST /api/v1/admin/schedules
 
 Create new schedule.
 
@@ -677,7 +703,7 @@ Create new schedule.
 }
 ```
 
-### PUT /api/admin/schedules/:id
+### PUT /api/v1/admin/schedules/:id
 
 Update schedule.
 
@@ -712,7 +738,7 @@ Update schedule.
 }
 ```
 
-### DELETE /api/admin/schedules/:id
+### DELETE /api/v1/admin/schedules/:id
 
 Delete schedule.
 
@@ -732,7 +758,7 @@ Delete schedule.
 }
 ```
 
-### POST /api/admin/materials
+### POST /api/v1/admin/materials
 
 Create new material.
 
@@ -772,7 +798,7 @@ Create new material.
 }
 ```
 
-### PUT /api/admin/materials/:id
+### PUT /api/v1/admin/materials/:id
 
 Update material.
 
@@ -807,7 +833,7 @@ Update material.
 }
 ```
 
-### DELETE /api/admin/materials/:id
+### DELETE /api/v1/admin/materials/:id
 
 Delete material.
 
@@ -827,7 +853,7 @@ Delete material.
 }
 ```
 
-### POST /api/admin/quizzes
+### POST /api/v1/admin/quizzes
 
 Create quiz with questions.
 
@@ -884,7 +910,7 @@ Create quiz with questions.
 }
 ```
 
-### DELETE /api/admin/quizzes/:id
+### DELETE /api/v1/admin/quizzes/:id
 
 Delete quiz.
 
@@ -904,7 +930,7 @@ Delete quiz.
 }
 ```
 
-### GET /api/admin/quiz-results
+### GET /api/v1/admin/quiz-results
 
 Get all quiz results with pagination.
 

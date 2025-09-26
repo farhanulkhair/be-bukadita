@@ -3,11 +3,10 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 require("dotenv").config();
+const supabaseClientMiddleware = require("./middlewares/supabase-middleware");
 
-// Import routes
-const authRoutes = require("./routes/auth-routes");
-const penggunaRoutes = require("./routes/pengguna-routes");
-const adminRoutes = require("./routes/admin-routes");
+// V1 index router (aggregates individual resource routers)
+const v1Index = require("./routes/v1/index");
 
 const app = express();
 
@@ -34,6 +33,9 @@ app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
+// Attach base Supabase clients early (anon + admin). Auth middleware will later inject user-scoped client.
+app.use(supabaseClientMiddleware);
+
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -44,20 +46,17 @@ app.get("/health", (req, res) => {
   });
 });
 
-// API routes
-app.use("/api/auth", authRoutes);
-app.use("/api/pengguna", penggunaRoutes);
-app.use("/api/admin", adminRoutes);
+// Mount aggregated v1 API surface
+app.use("/api/v1", v1Index);
 
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
-    error: {
-      message: "Route not found",
-      code: "NOT_FOUND",
-      path: req.originalUrl,
-      method: req.method,
-    },
+    error: true,
+    code: "NOT_FOUND",
+    message: "Route not found",
+    path: req.originalUrl,
+    method: req.method,
   });
 });
 
@@ -68,32 +67,27 @@ app.use((error, req, res, next) => {
   // Handle Joi validation errors
   if (error.isJoi) {
     return res.status(400).json({
-      error: {
-        message: error.details[0].message,
-        code: "VALIDATION_ERROR",
-      },
+      error: true,
+      code: "VALIDATION_ERROR",
+      message: error.details[0].message,
     });
   }
 
   // Handle Supabase errors
   if (error.code && error.message) {
-    return res.status(500).json({
-      error: {
-        message: "Database error occurred",
-        code: "DATABASE_ERROR",
-      },
-    });
+    return res
+      .status(500)
+      .json({ error: true, code: "DB_ERROR", message: error.message });
   }
 
   // Default error response
   res.status(500).json({
-    error: {
-      message:
-        process.env.NODE_ENV === "production"
-          ? "An unexpected error occurred"
-          : error.message,
-      code: "INTERNAL_ERROR",
-    },
+    error: true,
+    code: "INTERNAL_ERROR",
+    message:
+      process.env.NODE_ENV === "production"
+        ? "An unexpected error occurred"
+        : error.message,
   });
 });
 

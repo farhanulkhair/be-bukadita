@@ -10,6 +10,10 @@ const {
   getQuizById,
   submitQuizAnswers,
 } = require("../controllers/quiz-controller");
+const {
+  getMyProfile,
+  updateMyProfile,
+} = require("../controllers/user-controller");
 
 const router = express.Router();
 
@@ -24,5 +28,9 @@ router.get("/materials/:id", authMiddleware, getMaterialById);
 router.get("/quizzes", authMiddleware, getAllQuizzes);
 router.get("/quizzes/:id", authMiddleware, getQuizById);
 router.post("/quizzes/:quizId/submit", authMiddleware, submitQuizAnswers);
+
+// Self profile routes (authenticated users)
+router.get("/profile", authMiddleware, getMyProfile);
+router.put("/profile", authMiddleware, updateMyProfile);
 
 module.exports = router;

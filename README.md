@@ -14,7 +14,57 @@ Backend RESTful API untuk aplikasi Bukadita (Buku Kandita) - sistem informasi po
 - **Dashboard Admin**: Statistik dan manajemen pengguna
 - **Security**: Helmet, CORS, Rate limiting, dan Row Level Security (RLS)
 
-## 📋 Persyaratan
+## � Format Response Standar
+
+Semua endpoint kini menggunakan envelope konsisten:
+
+```json
+{
+  "error": false,
+  "code": "AUTH_LOGIN_SUCCESS",
+  "message": "Login successful",
+  "data": {
+    /* payload */
+  }
+}
+```
+
+Error:
+
+```json
+{
+  "error": true,
+  "code": "AUTH_LOGIN_INVALID_CREDENTIALS",
+  "message": "Invalid email or password"
+}
+```
+
+List + pagination:
+
+```json
+{
+  "error": false,
+  "code": "MATERIAL_FETCH_SUCCESS",
+  "message": "Materials retrieved successfully",
+  "data": {
+    "items": [
+      /* array */
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 10,
+      "total": 25,
+      "totalPages": 3,
+      "hasNextPage": true,
+      "hasPrevPage": false
+    }
+  }
+}
+```
+
+Konvensi kode: `DOMAIN_ACTION_STATUS` (contoh: `QUIZ_ATTEMPT_SUCCESS`, `ADMIN_USER_CREATE_ERROR`).
+
+## �📋 Persyaratan
 
 - Node.js 16+ dan npm
 - Akun Supabase
@@ -84,36 +134,46 @@ Server akan berjalan di `http://localhost:4000`
 
 - `GET /health` - Status server
 
-### Authentication
+### Authentication (v1)
 
-- `POST /api/auth/register` - Registrasi dengan email & password
-- `POST /api/auth/login` - Login dengan email & password
-- `POST /api/auth/logout` - Logout user
-- `POST /api/auth/profile` - Buat/update profil setelah login
+- `POST /api/v1/auth/register` - Registrasi dengan email & password
+- `POST /api/v1/auth/login` - Login dengan email & password
+- `POST /api/v1/auth/logout` - Logout user
+- `POST /api/v1/auth/profile` - Buat/update profil setelah sign-in
+- `POST /api/v1/auth/create-missing-profile` - Buat profil jika belum ada
 
-### Pengguna (Authenticated Users)
+### Materials & Quizzes (Authenticated Users)
 
-- `GET /api/pengguna/schedules` - Daftar jadwal posyandu
-- `GET /api/pengguna/materials` - Daftar materi (published only)
-- `GET /api/pengguna/materials/:id` - Detail materi
-- `GET /api/pengguna/quizzes` - Daftar kuis
-- `GET /api/pengguna/quizzes/:id` - Detail kuis dengan soal
-- `POST /api/pengguna/quizzes/:quizId/submit` - Submit jawaban kuis
+- `GET /api/v1/schedules` - Daftar jadwal posyandu (public)
+- `GET /api/v1/materials` - Daftar materi (published only jika bukan admin)
+- `GET /api/v1/materials/:id` - Detail materi
+- `GET /api/v1/quizzes` - Daftar kuis
+- `GET /api/v1/quizzes/:id` - Detail kuis dengan soal
+- `POST /api/v1/quizzes/:quizId/submit` - Submit jawaban kuis
+
+### User Self Profile
+
+- `GET /api/v1/users/me` - Profil sendiri
+- `PUT /api/v1/users/me` - Update profil sendiri
 
 ### Admin (Admin Role Required)
 
-- `POST /api/admin/schedules` - Buat jadwal
-- `PUT /api/admin/schedules/:id` - Update jadwal
-- `DELETE /api/admin/schedules/:id` - Hapus jadwal
-- `POST /api/admin/materials` - Buat materi
-- `PUT /api/admin/materials/:id` - Update materi
-- `DELETE /api/admin/materials/:id` - Hapus materi
-- `POST /api/admin/quizzes` - Buat kuis dengan soal
-- `DELETE /api/admin/quizzes/:id` - Hapus kuis
-- `GET /api/admin/users` - Daftar semua user
-- `PUT /api/admin/users/:id/role` - Update role user
-- `GET /api/admin/dashboard/stats` - Statistik dashboard
-- `GET /api/admin/quiz-results` - Hasil kuis semua user
+- `POST /api/v1/admin/schedules` - Buat jadwal
+- `PUT /api/v1/admin/schedules/:id` - Update jadwal
+- `DELETE /api/v1/admin/schedules/:id` - Hapus jadwal
+- `POST /api/v1/admin/materials` - Buat materi
+- `PUT /api/v1/admin/materials/:id` - Update materi
+- `DELETE /api/v1/admin/materials/:id` - Hapus materi
+- `POST /api/v1/admin/quizzes` - Buat kuis dengan soal
+- `DELETE /api/v1/admin/quizzes/:id` - Hapus kuis
+- `GET /api/v1/admin/users` - Daftar semua user
+- `POST /api/v1/admin/users` - Buat user baru
+- `GET /api/v1/admin/users/:id` - Detail user
+- `PUT /api/v1/admin/users/:id` - Update profil user
+- `PUT /api/v1/admin/users/:id/role` - Update role user
+- `DELETE /api/v1/admin/users/:id` - Hapus user
+- `GET /api/v1/admin/dashboard/stats` - Statistik dashboard
+- `GET /api/v1/admin/quiz-results` - Hasil kuis semua user
 
 ## 📝 Contoh Request/Response
 
@@ -122,7 +182,7 @@ Server akan berjalan di `http://localhost:4000`
 **Request:**
 
 ```bash
-POST /api/auth/profile
+POST /api/v1/auth/profile
 Authorization: Bearer <access_token>
 Content-Type: application/json
 
@@ -152,7 +212,7 @@ Content-Type: application/json
 **Request:**
 
 ```bash
-POST /api/pengguna/quizzes/quiz-uuid/submit
+POST /api/v1/quizzes/quiz-uuid/submit
 Authorization: Bearer <access_token>
 Content-Type: application/json
 
@@ -194,7 +254,7 @@ Content-Type: application/json
 **Request:**
 
 ```bash
-POST /api/admin/materials
+POST /api/v1/admin/materials
 Authorization: Bearer <admin_access_token>
 Content-Type: application/json
 
@@ -312,6 +372,71 @@ npm install
 # Test endpoints dengan curl atau tools lain
 curl http://localhost:4000/health
 ```
+
+### Seeding Data
+
+Tersedia script untuk membuat superadmin dan sample data (development).
+
+1. Tambahkan variabel berikut ke `.env` (service role wajib):
+
+```env
+SUPERADMIN_EMAIL=admin@example.com
+SUPERADMIN_PASSWORD=Password123
+SUPERADMIN_NAME=Super Admin
+```
+
+2. Jalankan seed superadmin:
+
+```bash
+npm run seed:superadmin
+```
+
+3. (Opsional) Seed data sample (materi, kuis, jadwal, user demo):
+
+```bash
+npm run seed:sample
+```
+
+Script:
+
+- `scripts/seed_superadmin.js`: Membuat / update user superadmin + profile
+- `scripts/seed_sample_data.js`: Membuat user demo, lokasi posyandu, jadwal contoh, materi & kuis contoh
+
+### Smoke Tests
+
+Gunakan script shell sederhana untuk memastikan endpoint utama hidup.
+
+```bash
+npm run smoke
+```
+
+Script `scripts/smoke_tests.sh` akan:
+
+1. Cek `/health`
+2. Register user baru (email acak)
+3. Ambil daftar materials & schedules (publik)
+4. Hit endpoint profil user
+
+### Postman Collection
+
+Import file `postman_collection.json` ke Postman. Variable `baseUrl` default `http://localhost:4000`.
+
+### CI Smoke
+
+Workflow GitHub Actions `ci-smoke.yml` menjalankan:
+
+1. Instal dependency
+2. Seed superadmin & sample data
+3. Start server
+4. Jalankan smoke tests
+
+Pastikan menambahkan secrets di repository:
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPERADMIN_EMAIL`
+- `SUPERADMIN_PASSWORD`
 
 ## 📚 Tools Pengembangan
 

@@ -20,6 +20,10 @@ const {
   getDashboardStats,
   getAllQuizResults,
   updateUserRole,
+  createUser,
+  getUserById,
+  updateUser,
+  deleteUser,
 } = require("../controllers/admin-controller");
 
 const router = express.Router();
@@ -42,9 +46,13 @@ router.delete("/materials/:id", deleteMaterial);
 router.post("/quizzes", createQuizWithQuestions);
 router.delete("/quizzes/:id", deleteQuiz);
 
-// User management
-router.get("/users", getAllUsers);
-router.put("/users/:id/role", updateUserRole);
+// User management (CRUD)
+router.get("/users", getAllUsers); // Get all users with pagination & search
+router.post("/users", createUser); // Create new user account
+router.get("/users/:id", getUserById); // Get user detail by ID
+router.put("/users/:id", updateUser); // Update user profile data
+router.put("/users/:id/role", updateUserRole); // Update user role specifically
+router.delete("/users/:id", deleteUser); // Delete user account
 
 // Dashboard and analytics
 router.get("/dashboard/stats", getDashboardStats);

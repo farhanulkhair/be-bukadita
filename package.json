@@ -6,7 +6,12 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon --watch src --exec node src/server.js",
-    "lint": "eslint . --ext .js"
+    "lint": "eslint . --ext .js",
+    "seed:superadmin": "node scripts/seed_superadmin.js",
+    "seed:sample": "node scripts/seed_sample_data.js",
+    "smoke": "bash scripts/smoke_tests.sh",
+    "test:curl": "bash scripts/test_endpoints.sh || echo 'Run on bash-compatible shell'",
+    "test": "jest --runInBand"
   },
   "keywords": [],
   "author": "",
@@ -23,6 +28,8 @@
     "joi": "^17.11.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.1.10",
+    "jest": "^29.7.0",
+    "supertest": "^7.1.1"
   }
 }

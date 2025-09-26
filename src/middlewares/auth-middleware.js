@@ -1,4 +1,5 @@
-const { supabase } = require("../lib/SupabaseClient");
+const { supabaseAnon } = require("../lib/SupabaseClient");
+const { createClient } = require("@supabase/supabase-js");
 
 const authMiddleware = async (req, res, next) => {
   try {
@@ -10,21 +11,37 @@ const authMiddleware = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({
-        error: {
-          message: "Authorization header missing or invalid",
-          code: "UNAUTHORIZED",
-        },
+        error: true,
+        code: "UNAUTHORIZED",
+        message: "Authorization header missing or invalid",
       });
     }
 
     const token = authHeader.substring(7);
     console.log("Auth middleware - Token extracted, length:", token.length);
 
-    // Verify token with Supabase
+    // Create per-request authenticated client (token in header enables RLS as the user)
+    const userClient = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY,
+      {
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      }
+    );
+
+    // Verify token with the per-request client
     const {
       data: { user },
       error,
-    } = await supabase.auth.getUser(token);
+    } = await userClient.auth.getUser(token);
 
     if (error || !user) {
       console.log(
@@ -32,10 +49,9 @@ const authMiddleware = async (req, res, next) => {
         error?.message
       );
       return res.status(401).json({
-        error: {
-          message: "Invalid or expired token",
-          code: "UNAUTHORIZED",
-        },
+        error: true,
+        code: "UNAUTHORIZED",
+        message: "Invalid or expired token",
       });
     }
 
@@ -78,7 +94,7 @@ const authMiddleware = async (req, res, next) => {
     // For other endpoints, check if profile exists
     console.log("Auth middleware - Fetching profile for user:", user.id);
 
-    const { data: profile, error: profileError } = await supabase
+    const { data: profile, error: profileError } = await userClient
       .from("profiles")
       .select("*")
       .eq("id", user.id)
@@ -86,38 +102,36 @@ const authMiddleware = async (req, res, next) => {
 
     if (profileError) {
       console.log("Auth middleware - Profile fetch error:", profileError);
-      console.log("Auth middleware - Profile error code:", profileError.code);
-
       if (profileError.code === "PGRST116") {
-        // Profile not found
         return res.status(404).json({
-          error: {
-            message:
-              "User profile not found. Please complete your profile first.",
-            code: "PROFILE_NOT_FOUND",
-          },
+          error: true,
+          code: "PROFILE_NOT_FOUND",
+          message:
+            "User profile not found. Please complete your profile first.",
         });
       }
-
       return res.status(500).json({
-        error: {
-          message: "Failed to fetch user profile",
-          code: "PROFILE_FETCH_ERROR",
-        },
+        error: true,
+        code: "PROFILE_FETCH_ERROR",
+        message: "Failed to fetch user profile",
       });
     }
 
     console.log("Auth middleware - Profile found:", profile.id, profile.role);
     req.user.profile = profile;
+    req.profile = profile; // ensure role-middleware can read role
+
+    // Expose the authenticated client for downstream controllers
+    req.authenticatedClient = userClient; // per-request client with user token
+    req.supabase = userClient; // alias for controllers expecting req.supabase
 
     next();
   } catch (error) {
     console.error("Auth middleware error:", error);
     return res.status(500).json({
-      error: {
-        message: "Authentication middleware error",
-        code: "AUTH_MIDDLEWARE_ERROR",
-      },
+      error: true,
+      code: "AUTH_MIDDLEWARE_ERROR",
+      message: "Authentication middleware error",
     });
   }
 };
