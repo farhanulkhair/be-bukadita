@@ -289,7 +289,6 @@ const register = async (req, res) => {
     console.log("Registration response:", {
       user: authData.user?.id,
       session: !!authData.session,
-      email_confirmed: authData.user?.email_confirmed_at,
       user_metadata: authData.user?.user_metadata,
     });
 
@@ -468,6 +467,7 @@ const login = async (req, res) => {
           user: {
             id: authData.user.id,
             email: authData.user.email,
+            last_sign_in_at: authData.user.last_sign_in_at,
             profile: null,
           },
           hints: { possible_rls_issue: rlsBlocked || undefined },
@@ -483,7 +483,7 @@ const login = async (req, res) => {
       user: {
         id: authData.user.id,
         email: authData.user.email,
-        email_confirmed_at: authData.user.email_confirmed_at,
+        last_sign_in_at: authData.user.last_sign_in_at,
         profile: profileData,
       },
     });
@@ -558,7 +558,6 @@ const debugUsers = async (req, res) => {
           id: user.id,
           email: user.email,
           created_at: user.created_at,
-          email_confirmed_at: user.email_confirmed_at,
           user_metadata: user.user_metadata,
         })) || [],
       profiles: profiles || [],

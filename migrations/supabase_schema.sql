@@ -1,15 +1,10 @@
-
-
--- PHASE 2 (FINAL) — create extension, tables, indexes, functions, triggers, and RLS policies
--- IMPORTANT: BACKUP your DB before running this script.
-
 -- --------------------
 -- 0) extension
 -- --------------------
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- --------------------
--- 1) roles (static)
+-- 1) roles (static) - KEPT FOR REFERENCE ONLY
 -- --------------------
 CREATE TABLE IF NOT EXISTS public.roles (
   id serial PRIMARY KEY,
@@ -25,26 +20,26 @@ VALUES
 ON CONFLICT (name) DO NOTHING;
 
 -- --------------------
--- 2) profiles (linked to auth.users) — NO DEFAULT subquery
+-- 2) profiles (linked to auth.users) — USES role TEXT NOT FK
 -- --------------------
 CREATE TABLE IF NOT EXISTS public.profiles (
   id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   full_name text,
   phone text,
   email text,
-  role_id integer REFERENCES public.roles(id),
+  role text DEFAULT 'pengguna' CHECK (role IN ('superadmin', 'admin', 'pengguna')),
   avatar_url text,
   address text,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
 );
 
--- Trigger function to set default role_id if not provided
-CREATE OR REPLACE FUNCTION public.set_default_role_id()
+-- Trigger function to set default role if not provided
+CREATE OR REPLACE FUNCTION public.set_default_role()
 RETURNS trigger AS $$
 BEGIN
-  IF NEW.role_id IS NULL THEN
-    SELECT id INTO NEW.role_id FROM public.roles WHERE name = 'pengguna' LIMIT 1;
+  IF NEW.role IS NULL OR NEW.role = '' THEN
+    NEW.role := 'pengguna';
   END IF;
   RETURN NEW;
 END;
@@ -54,7 +49,7 @@ DROP TRIGGER IF EXISTS trg_set_default_role ON public.profiles;
 CREATE TRIGGER trg_set_default_role
   BEFORE INSERT ON public.profiles
   FOR EACH ROW
-  EXECUTE FUNCTION public.set_default_role_id();
+  EXECUTE FUNCTION public.set_default_role();
 
 -- --------------------
 -- 3) posyandu locations & schedules
@@ -191,7 +186,7 @@ CREATE TABLE IF NOT EXISTS public.activity_logs (
 -- --------------------
 -- 8) indexes
 -- --------------------
-CREATE INDEX IF NOT EXISTS idx_profiles_role_id ON public.profiles(role_id);
+CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles(role);
 CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles(email);
 CREATE INDEX IF NOT EXISTS idx_materials_slug ON public.materials(slug);
 CREATE INDEX IF NOT EXISTS idx_materials_published ON public.materials(published);
@@ -225,18 +220,19 @@ CREATE TRIGGER trg_update_materials_updated_at
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger AS $$
 BEGIN
-  INSERT INTO public.profiles (id, full_name, phone, email, role_id)
+  INSERT INTO public.profiles (id, full_name, phone, email, role)
   VALUES (
     NEW.id,
     COALESCE(NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'name', split_part(NEW.email,'@',1)),
     COALESCE(NEW.raw_user_meta_data->>'phone', ''),
     NEW.email,
-    (SELECT id FROM public.roles WHERE name = 'pengguna' LIMIT 1)
+    COALESCE(NEW.raw_user_meta_data->>'role', 'pengguna')
   )
   ON CONFLICT (id) DO UPDATE
     SET full_name = EXCLUDED.full_name,
         phone = COALESCE(NULLIF(EXCLUDED.phone,''), public.profiles.phone),
-        email = EXCLUDED.email;
+        email = EXCLUDED.email,
+        role = COALESCE(EXCLUDED.role, public.profiles.role);
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -324,7 +320,7 @@ CREATE POLICY profiles_select_owner_or_admin
 CREATE POLICY profiles_insert_self
   ON public.profiles
   FOR INSERT
-  WITH CHECK ( auth.uid() = id AND role_id = (SELECT id FROM public.roles WHERE name = 'pengguna' LIMIT 1) );
+  WITH CHECK ( auth.uid() = id AND role = 'pengguna' );
 
 CREATE POLICY profiles_update_owner
   ON public.profiles

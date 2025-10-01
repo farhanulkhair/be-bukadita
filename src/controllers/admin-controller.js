@@ -145,6 +145,37 @@ const getAllUsers = async (req, res) => {
       );
     }
 
+    // Enrich with auth metadata (last_sign_in_at, email_confirmed_at)
+    let items = data || [];
+    if (items && items.length > 0) {
+      try {
+        items = await Promise.all(
+          items.map(async (u) => {
+            try {
+              const { data: authUserRes, error: authErr } =
+                await supabaseAdmin.auth.admin.getUserById(u.id);
+              if (!authErr && authUserRes?.user) {
+                return {
+                  ...u,
+                  email_confirmed_at:
+                    authUserRes.user.email_confirmed_at || null,
+                  last_sign_in_at: authUserRes.user.last_sign_in_at || null,
+                };
+              }
+            } catch (e) {
+              // ignore per-user auth fetch errors
+            }
+            return { ...u, email_confirmed_at: null, last_sign_in_at: null };
+          })
+        );
+      } catch (e) {
+        console.warn(
+          "[ADMIN] Failed to enrich users with auth metadata:",
+          e?.message
+        );
+      }
+    }
+
     const pagination = paginate(
       count || 0,
       parseInt(page, 10),
@@ -155,7 +186,7 @@ const getAllUsers = async (req, res) => {
       "ADMIN_USERS_FETCH_SUCCESS",
       "Users retrieved successfully",
       {
-        items: data,
+        items,
         pagination,
         visibility: {
           caller_role: callerRole,
@@ -710,11 +741,6 @@ const getDashboardStats = async (req, res) => {
       total: quizzesCount || 0,
       submissions: quizSubmissionsCount || 0,
     };
-
-    const { count: schedulesCount } = await client
-      .from("posyandu_schedules")
-      .select("*", { count: "exact", head: true });
-    stats.schedules = { total: schedulesCount || 0 };
 
     return success(
       res,
