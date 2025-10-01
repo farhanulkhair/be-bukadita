@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Seed sample development data: materials, quizzes, schedules, location, demo users (non-admin)
+// Seed sample development data: materials, quizzes, demo users (non-admin)
 // Idempotent-ish: it will skip creating duplicates based on slug/title uniqueness.
 require("dotenv/config");
 const { createClient } = require("@supabase/supabase-js");
@@ -56,54 +56,7 @@ async function ensureUser(email, fullName) {
   return user.id;
 }
 
-async function ensureLocation() {
-  const { data, error } = await supabase
-    .from("posyandu_locations")
-    .select("id")
-    .limit(1);
-  if (error) throw error;
-  if (data.length) return data[0].id;
-  const { data: inserted, error: insErr } = await supabase
-    .from("posyandu_locations")
-    .insert({
-      name: "Posyandu Mawar",
-      address: "Jl. Sehat No. 1",
-      contact: "081234567890",
-    })
-    .select()
-    .single();
-  if (insErr) throw insErr;
-  return inserted.id;
-}
-
-async function seedSchedules(locationId, creatorId) {
-  const { data, error } = await supabase
-    .from("posyandu_schedules")
-    .select("id")
-    .limit(1);
-  if (error) throw error;
-  if (data.length) return; // already have schedules
-  const now = new Date();
-  const nextWeek = new Date(Date.now() + 7 * 24 * 3600 * 1000);
-  await supabase.from("posyandu_schedules").insert([
-    {
-      location_id: locationId,
-      title: "Pemeriksaan Balita Rutin",
-      description: "Cek kesehatan dan tumbuh kembang balita",
-      start_at: now.toISOString(),
-      end_at: new Date(now.getTime() + 2 * 3600 * 1000).toISOString(),
-      created_by: creatorId,
-    },
-    {
-      location_id: locationId,
-      title: "Penyuluhan Gizi Ibu Hamil",
-      description: "Materi edukasi nutrisi ibu hamil",
-      start_at: nextWeek.toISOString(),
-      end_at: new Date(nextWeek.getTime() + 2 * 3600 * 1000).toISOString(),
-      created_by: creatorId,
-    },
-  ]);
-}
+// removed location/schedules seeding as those tables are no longer used
 
 async function ensureMaterial(authorId) {
   const slug = "nutrisi-ibu-hamil";
@@ -177,8 +130,7 @@ async function run() {
       "demo_pengguna@example.com",
       "Demo Pengguna"
     );
-    const locationId = await ensureLocation();
-    await seedSchedules(locationId, demoUserId);
+    // schedules/location removed
     const materialId = await ensureMaterial(demoUserId);
     await ensureQuiz(demoUserId, materialId);
     console.log("✅ Sample data seed complete");

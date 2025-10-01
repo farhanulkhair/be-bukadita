@@ -4,7 +4,6 @@ const express = require("express");
 const authRouter = require("./auth");
 const materialsRouter = require("./materials");
 const quizzesRouter = require("./quizzes");
-const schedulesRouter = require("./schedules");
 const usersRouter = require("./users");
 const adminRouter = require("./admin");
 
@@ -14,7 +13,6 @@ const router = express.Router();
 router.use("/auth", authRouter);
 router.use("/materials", materialsRouter);
 router.use("/quizzes", quizzesRouter);
-router.use("/schedules", schedulesRouter);
 router.use("/users", usersRouter);
 router.use("/admin", adminRouter);
 

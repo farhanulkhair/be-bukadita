@@ -11,6 +11,8 @@
     "seed:sample": "node scripts/seed_sample_data.js",
     "smoke": "bash scripts/smoke_tests.sh",
     "test:curl": "bash scripts/test_endpoints.sh || echo 'Run on bash-compatible shell'",
+    "test:superadmin": "pwsh -File scripts/test_superadmin.ps1",
+    "test:superadmin:bash": "bash scripts/test_superadmin.sh",
     "test": "jest --runInBand"
   },
   "keywords": [],
