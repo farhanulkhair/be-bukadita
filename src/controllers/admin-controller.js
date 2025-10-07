@@ -719,10 +719,10 @@ const getDashboardStats = async (req, res) => {
     };
 
     const { count: materialsCount } = await client
-      .from("materials")
+      .from("sub_materis")
       .select("*", { count: "exact", head: true });
     const { count: publishedMaterialsCount } = await client
-      .from("materials")
+      .from("sub_materis")
       .select("*", { count: "exact", head: true })
       .eq("published", true);
     stats.materials = {
@@ -732,10 +732,10 @@ const getDashboardStats = async (req, res) => {
     };
 
     const { count: quizzesCount } = await client
-      .from("quizzes")
+      .from("materis_quizzes")
       .select("*", { count: "exact", head: true });
     const { count: quizSubmissionsCount } = await client
-      .from("quiz_results")
+      .from("user_quiz_attempts")
       .select("*", { count: "exact", head: true });
     stats.quizzes = {
       total: quizzesCount || 0,

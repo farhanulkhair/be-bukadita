@@ -1,487 +1,267 @@
--- --------------------
--- 0) extension
--- --------------------
+-- Enable uuid generator (pgcrypto)
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- --------------------
--- 1) roles (static) - KEPT FOR REFERENCE ONLY
--- --------------------
+-- -------------------------
+-- Table: roles
+-- -------------------------
 CREATE TABLE IF NOT EXISTS public.roles (
   id serial PRIMARY KEY,
-  name text NOT NULL UNIQUE,    -- 'superadmin','admin','pengguna'
+  name text NOT NULL UNIQUE,
   description text
 );
 
+-- Seed roles (run once)
 INSERT INTO public.roles (name, description)
 VALUES
-  ('superadmin','Super Administrator'),
-  ('admin','Admin biasa'),
-  ('pengguna','Pengguna / Kader')
+  ('superadmin','Super administrator - bisa membuat admin'),
+  ('admin','Administrator - input modul/materi/kuis'),
+  ('pengguna','Kader / pengguna biasa')
 ON CONFLICT (name) DO NOTHING;
 
--- --------------------
--- 2) profiles (linked to auth.users) — USES role TEXT NOT FK
--- --------------------
+-- -------------------------
+-- Table: modules
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.modules (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug text NOT NULL UNIQUE,
+  title text NOT NULL,
+  description text,
+  duration_label text,
+  duration_minutes integer CHECK (duration_minutes >= 0),
+  lessons integer DEFAULT 0 CHECK (lessons >= 0),
+  difficulty text,
+  category text,
+  rating numeric DEFAULT 0 CHECK (rating >= 0),
+  students integer DEFAULT 0 CHECK (students >= 0),
+  estimated_completion_label text,
+  published boolean DEFAULT false,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  CONSTRAINT fk_modules_created_by FOREIGN KEY (created_by) REFERENCES auth.users (id) ON DELETE SET NULL,
+  CONSTRAINT fk_modules_updated_by FOREIGN KEY (updated_by) REFERENCES auth.users (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_modules_category ON public.modules (category);
+CREATE INDEX IF NOT EXISTS idx_modules_published ON public.modules (published);
+
+-- -------------------------
+-- Table: sub_materis
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.sub_materis (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  module_id uuid NOT NULL,
+  title text NOT NULL,
+  order_index integer DEFAULT 0,
+  content text NOT NULL,
+  published boolean DEFAULT false,
+  slug text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  CONSTRAINT fk_submateris_module FOREIGN KEY (module_id) REFERENCES public.modules (id) ON DELETE CASCADE,
+  CONSTRAINT fk_submateris_created_by FOREIGN KEY (created_by) REFERENCES auth.users (id) ON DELETE SET NULL,
+  CONSTRAINT fk_submateris_updated_by FOREIGN KEY (updated_by) REFERENCES auth.users (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_submateri_module_id ON public.sub_materis (module_id);
+CREATE INDEX IF NOT EXISTS idx_submateri_module_order ON public.sub_materis (module_id, order_index);
+
+-- -------------------------
+-- Table: poin_details
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.poin_details (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  sub_materi_id uuid NOT NULL,
+  title text NOT NULL,
+  content_html text,
+  type text DEFAULT 'text',           -- 'text' | 'video' | 'image' etc.
+  duration_label text,
+  duration_minutes integer CHECK (duration_minutes >= 0),
+  video_url text,
+  image_url text,
+  order_index integer DEFAULT 0,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  CONSTRAINT fk_poin_sub FOREIGN KEY (sub_materi_id) REFERENCES public.sub_materis (id) ON DELETE CASCADE,
+  CONSTRAINT fk_poin_created_by FOREIGN KEY (created_by) REFERENCES auth.users (id) ON DELETE SET NULL,
+  CONSTRAINT fk_poin_updated_by FOREIGN KEY (updated_by) REFERENCES auth.users (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_poin_sub ON public.poin_details (sub_materi_id);
+CREATE INDEX IF NOT EXISTS idx_poin_order ON public.poin_details (sub_materi_id, order_index);
+
+-- -------------------------
+-- Table: materis_quizzes
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.materis_quizzes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  module_id uuid NOT NULL,
+  sub_materi_id uuid NOT NULL,        -- quiz terkait pada poin terakhir / sub materi
+  quiz_type text DEFAULT 'sub',      -- 'sub' atau 'module' (kamu sebut permateri)
+  title text,
+  description text,
+  time_limit_seconds integer DEFAULT 600 CHECK (time_limit_seconds > 0), -- default 10 menit
+  passing_score integer DEFAULT 70 CHECK (passing_score >= 0 AND passing_score <= 100),
+  created_at timestamptz DEFAULT now(),
+  created_by uuid,
+  updated_at timestamptz DEFAULT now(),
+  updated_by uuid,
+  CONSTRAINT fk_quiz_module FOREIGN KEY (module_id) REFERENCES public.modules (id) ON DELETE CASCADE,
+  CONSTRAINT fk_quiz_sub FOREIGN KEY (sub_materi_id) REFERENCES public.sub_materis (id) ON DELETE CASCADE,
+  CONSTRAINT fk_quiz_created_by FOREIGN KEY (created_by) REFERENCES auth.users (id) ON DELETE SET NULL,
+  CONSTRAINT fk_quiz_updated_by FOREIGN KEY (updated_by) REFERENCES auth.users (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_quiz_module ON public.materis_quizzes (module_id);
+CREATE INDEX IF NOT EXISTS idx_quiz_sub ON public.materis_quizzes (sub_materi_id);
+
+-- -------------------------
+-- Table: materis_quiz_questions
+-- (options stored as jsonb - opsi A)
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.materis_quiz_questions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  quiz_id uuid NOT NULL,
+  question_text text NOT NULL,
+  options jsonb NOT NULL,      -- e.g. ['a','b','c','d']
+  correct_answer_index integer NOT NULL,  -- index into options (0-based)
+  explanation text,
+  order_index integer DEFAULT 0,
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT fk_question_quiz FOREIGN KEY (quiz_id) REFERENCES public.materis_quizzes (id) ON DELETE CASCADE,
+  CONSTRAINT ck_correct_index_nonneg CHECK (correct_answer_index >= 0)
+);
+
+-- -------------------------
+-- Table: user_quiz_attempts
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.user_quiz_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  quiz_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  score numeric CHECK (score >= 0 AND score <= 100),
+  total_questions integer,
+  correct_answers integer,
+  passed boolean DEFAULT false,
+  answers jsonb,                -- store array of answers with question_id and selected_index
+  started_at timestamptz DEFAULT now(),
+  finished_at timestamptz,
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT fk_attempt_quiz FOREIGN KEY (quiz_id) REFERENCES public.materis_quizzes (id) ON DELETE CASCADE,
+  CONSTRAINT fk_attempt_user FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_quiz_user ON public.user_quiz_attempts (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_quiz_quiz ON public.user_quiz_attempts (quiz_id);
+
+-- -------------------------
+-- Table: user_sub_materi_progress
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.user_sub_materi_progress (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  sub_materi_id uuid NOT NULL,
+  is_unlocked boolean DEFAULT false,
+  is_completed boolean DEFAULT false,
+  current_poin_index integer DEFAULT 0,
+  last_accessed_at timestamptz,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  CONSTRAINT uq_user_sub UNIQUE (user_id, sub_materi_id),
+  CONSTRAINT fk_user_sub_sub FOREIGN KEY (sub_materi_id) REFERENCES public.sub_materis (id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_sub_user FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_sub_user ON public.user_sub_materi_progress (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sub_sub ON public.user_sub_materi_progress (sub_materi_id);
+
+-- -------------------------
+-- Table: user_module_progress
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.user_module_progress (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  module_id uuid NOT NULL,
+  status text DEFAULT 'not-started',  -- 'not-started' | 'in-progress' | 'completed'
+  progress_percent integer DEFAULT 0 CHECK (progress_percent >= 0 AND progress_percent <= 100),
+  last_accessed_at timestamptz,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  CONSTRAINT uq_user_module UNIQUE (user_id, module_id),
+  CONSTRAINT fk_user_module_mod FOREIGN KEY (module_id) REFERENCES public.modules (id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_module_user FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_module_user ON public.user_module_progress (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_module_module ON public.user_module_progress (module_id);
+
+-- -------------------------
+-- Table: user_poin_progress
+-- -------------------------
+CREATE TABLE IF NOT EXISTS public.user_poin_progress (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  poin_id uuid NOT NULL,         -- poin_details.id
+  is_completed boolean DEFAULT false,
+  completed_at timestamptz,
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT uq_user_poin UNIQUE (user_id, poin_id),
+  CONSTRAINT fk_user_poin_poin FOREIGN KEY (poin_id) REFERENCES public.poin_details (id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_poin_user FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_poin_user ON public.user_poin_progress (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_poin_poin ON public.user_poin_progress (poin_id);
+
+-- -------------------------
+-- Table: profiles (1:1 with auth.users)
+-- -------------------------
 CREATE TABLE IF NOT EXISTS public.profiles (
-  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  id uuid PRIMARY KEY,           -- same as auth.users.id
   full_name text,
   phone text,
   email text,
-  role text DEFAULT 'pengguna' CHECK (role IN ('superadmin', 'admin', 'pengguna')),
   avatar_url text,
   address text,
+  role text DEFAULT 'pengguna',
   created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
+  updated_at timestamptz DEFAULT now(),
+  CONSTRAINT fk_profiles_user FOREIGN KEY (id) REFERENCES auth.users (id) ON DELETE CASCADE
 );
 
--- Trigger function to set default role if not provided
-CREATE OR REPLACE FUNCTION public.set_default_role()
-RETURNS trigger AS $$
-BEGIN
-  IF NEW.role IS NULL OR NEW.role = '' THEN
-    NEW.role := 'pengguna';
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles (email);
+CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles (role);
 
-DROP TRIGGER IF EXISTS trg_set_default_role ON public.profiles;
-CREATE TRIGGER trg_set_default_role
-  BEFORE INSERT ON public.profiles
-  FOR EACH ROW
-  EXECUTE FUNCTION public.set_default_role();
-
--- --------------------
--- 3) posyandu locations & schedules
--- --------------------
-CREATE TABLE IF NOT EXISTS public.posyandu_locations (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL,
-  address text,
-  latitude numeric,
-  longitude numeric,
-  contact text,
-  created_at timestamptz DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.posyandu_schedules (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  location_id uuid REFERENCES public.posyandu_locations(id) ON DELETE CASCADE,
-  title text NOT NULL,
-  description text,
-  start_at timestamptz NOT NULL,
-  end_at timestamptz,
-  created_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  created_at timestamptz DEFAULT now()
-);
-
--- --------------------
--- 4) materials and related
--- --------------------
-CREATE TABLE IF NOT EXISTS public.materials (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  title text NOT NULL,
-  slug text NOT NULL UNIQUE,
-  description text,
-  content text NOT NULL,
-  author uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  published boolean DEFAULT false,
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.material_sections (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  material_id uuid REFERENCES public.materials(id) ON DELETE CASCADE,
-  title text NOT NULL,
-  content text,
-  position integer DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS public.material_media (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  material_id uuid REFERENCES public.materials(id) ON DELETE CASCADE,
-  file_url text NOT NULL,
-  file_type text,
-  caption text
-);
-
--- --------------------
--- 5) quizzes / questions / choices
--- --------------------
-CREATE TABLE IF NOT EXISTS public.quizzes (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  material_id uuid REFERENCES public.materials(id) ON DELETE CASCADE,
-  title text,
-  description text,
-  passing_score integer,
-  time_limit_seconds integer,
-  created_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  created_at timestamptz DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.quiz_questions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  quiz_id uuid REFERENCES public.quizzes(id) ON DELETE CASCADE,
-  question_text text NOT NULL,
-  question_type text DEFAULT 'mcq',
-  position integer DEFAULT 0,
-  created_at timestamptz DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.quiz_choices (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  question_id uuid REFERENCES public.quiz_questions(id) ON DELETE CASCADE,
-  choice_text text NOT NULL,
-  is_correct boolean DEFAULT false,
-  position integer DEFAULT 0
-);
-
--- --------------------
--- 6) quiz attempts & answers
--- --------------------
-CREATE TABLE IF NOT EXISTS public.quiz_attempts (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  quiz_id uuid REFERENCES public.quizzes(id) ON DELETE CASCADE,
-  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
-  score numeric CHECK (score >= 0 AND score <= 100),
-  started_at timestamptz DEFAULT now(),
-  finished_at timestamptz,
-  status text DEFAULT 'in_progress'
-);
-
-CREATE TABLE IF NOT EXISTS public.quiz_answers (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  attempt_id uuid REFERENCES public.quiz_attempts(id) ON DELETE CASCADE,
-  question_id uuid REFERENCES public.quiz_questions(id) ON DELETE CASCADE,
-  choice_id uuid REFERENCES public.quiz_choices(id),
-  text_answer text,
-  is_correct boolean,
-  answered_at timestamptz DEFAULT now()
-);
-
--- --------------------
--- 7) invitations & activity logs
--- --------------------
+-- -------------------------
+-- Table: invitations
+-- -------------------------
 CREATE TABLE IF NOT EXISTS public.invitations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   email text NOT NULL,
-  invited_by uuid REFERENCES auth.users(id),
-  role_id integer REFERENCES public.roles(id),
-  token text NOT NULL,
+  invited_by uuid,               -- auth.users.id
+  role_id integer,               -- roles.id
+  token text NOT NULL UNIQUE,
   accepted boolean DEFAULT false,
-  created_at timestamptz DEFAULT now()
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT fk_invit_inviter FOREIGN KEY (invited_by) REFERENCES auth.users (id),
+  CONSTRAINT fk_invit_role FOREIGN KEY (role_id) REFERENCES public.roles (id)
 );
 
+-- -------------------------
+-- Table: activity_logs
+-- -------------------------
 CREATE TABLE IF NOT EXISTS public.activity_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  actor_id uuid REFERENCES auth.users(id),
+  actor_id uuid,                 -- auth.users.id
   action text NOT NULL,
   target_table text,
   target_id text,
   meta jsonb,
-  created_at timestamptz DEFAULT now()
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT fk_activity_actor FOREIGN KEY (actor_id) REFERENCES auth.users (id)
 );
-
--- --------------------
--- 8) indexes
--- --------------------
-CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles(role);
-CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles(email);
-CREATE INDEX IF NOT EXISTS idx_materials_slug ON public.materials(slug);
-CREATE INDEX IF NOT EXISTS idx_materials_published ON public.materials(published);
-CREATE INDEX IF NOT EXISTS idx_materials_author ON public.materials(author);
-CREATE INDEX IF NOT EXISTS idx_quizzes_material_id ON public.quizzes(material_id);
-CREATE INDEX IF NOT EXISTS idx_quiz_questions_quiz_id ON public.quiz_questions(quiz_id);
-CREATE INDEX IF NOT EXISTS idx_quiz_choices_question_id ON public.quiz_choices(question_id);
-CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user ON public.quiz_attempts(user_id);
-CREATE INDEX IF NOT EXISTS idx_posyandu_schedules_loc ON public.posyandu_schedules(location_id);
-CREATE INDEX IF NOT EXISTS idx_posyandu_schedules_start ON public.posyandu_schedules(start_at);
-
--- --------------------
--- 9) helper functions & triggers
--- --------------------
--- updated_at helper for materials (and can be reused)
-CREATE OR REPLACE FUNCTION public.update_updated_at_column()
-RETURNS trigger AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_update_materials_updated_at ON public.materials;
-CREATE TRIGGER trg_update_materials_updated_at
-  BEFORE UPDATE ON public.materials
-  FOR EACH ROW
-  EXECUTE FUNCTION public.update_updated_at_column();
-
--- auto-create/update profile when auth.users row is created/updated
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS trigger AS $$
-BEGIN
-  INSERT INTO public.profiles (id, full_name, phone, email, role)
-  VALUES (
-    NEW.id,
-    COALESCE(NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'name', split_part(NEW.email,'@',1)),
-    COALESCE(NEW.raw_user_meta_data->>'phone', ''),
-    NEW.email,
-    COALESCE(NEW.raw_user_meta_data->>'role', 'pengguna')
-  )
-  ON CONFLICT (id) DO UPDATE
-    SET full_name = EXCLUDED.full_name,
-        phone = COALESCE(NULLIF(EXCLUDED.phone,''), public.profiles.phone),
-        email = EXCLUDED.email,
-        role = COALESCE(EXCLUDED.role, public.profiles.role);
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW
-  EXECUTE FUNCTION public.handle_new_user();
-
--- helper to check admin from JWT claim
-CREATE OR REPLACE FUNCTION public.is_adminish()
-RETURNS boolean
-LANGUAGE sql STABLE AS $$
-  SELECT COALESCE((auth.jwt() -> 'app_metadata' ->> 'role') IN ('admin','superadmin'), false);
-$$;
-
--- --------------------
--- 10) enable RLS on needed tables
--- --------------------
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.materials ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.posyandu_schedules ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.quizzes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.quiz_questions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.quiz_choices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.quiz_attempts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.quiz_answers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.posyandu_locations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.invitations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.activity_logs ENABLE ROW LEVEL SECURITY;
-
--- --------------------
--- 11) DROP old policies (if any)
--- --------------------
--- profiles
-DROP POLICY IF EXISTS profiles_select_owner_or_admin ON public.profiles;
-DROP POLICY IF EXISTS profiles_insert_self ON public.profiles;
-DROP POLICY IF EXISTS profiles_update_owner ON public.profiles;
-DROP POLICY IF EXISTS profiles_update_admin ON public.profiles;
-DROP POLICY IF EXISTS profiles_delete_owner_or_admin ON public.profiles;
-
--- materials
-DROP POLICY IF EXISTS materials_select_public ON public.materials;
-DROP POLICY IF EXISTS materials_insert_admin ON public.materials;
-DROP POLICY IF EXISTS materials_update_admin_or_author ON public.materials;
-DROP POLICY IF EXISTS materials_delete_admin ON public.materials;
-
--- posyandu
-DROP POLICY IF EXISTS posyandu_locations_select_public ON public.posyandu_locations;
-DROP POLICY IF EXISTS posyandu_locations_crud_admin ON public.posyandu_locations;
-DROP POLICY IF EXISTS posyandu_schedules_select_public ON public.posyandu_schedules;
-DROP POLICY IF EXISTS posyandu_schedules_insert_admin ON public.posyandu_schedules;
-DROP POLICY IF EXISTS posyandu_schedules_update_admin ON public.posyandu_schedules;
-DROP POLICY IF EXISTS posyandu_schedules_delete_admin ON public.posyandu_schedules;
-
--- quizzes
-DROP POLICY IF EXISTS quizzes_select_public ON public.quizzes;
-DROP POLICY IF EXISTS quizzes_crud_admin ON public.quizzes;
-DROP POLICY IF EXISTS quiz_questions_select ON public.quiz_questions;
-DROP POLICY IF EXISTS quiz_choices_select ON public.quiz_choices;
-
--- quiz attempts & answers
-DROP POLICY IF EXISTS quiz_attempts_insert_owner ON public.quiz_attempts;
-DROP POLICY IF EXISTS quiz_attempts_select_owner_admin ON public.quiz_attempts;
-DROP POLICY IF EXISTS quiz_attempts_update_owner ON public.quiz_attempts;
-DROP POLICY IF EXISTS quiz_answers_insert_owner ON public.quiz_answers;
-DROP POLICY IF EXISTS quiz_answers_select_owner_admin ON public.quiz_answers;
-
--- invitations & activity logs
-DROP POLICY IF EXISTS invitations_insert_admin ON public.invitations;
-DROP POLICY IF EXISTS invitations_select_admin_or_email ON public.invitations;
-DROP POLICY IF EXISTS activity_logs_admin_only ON public.activity_logs;
-
--- --------------------
--- 12) CREATE policies (explicit, correct syntax)
--- --------------------
-
--- PROFILES
-CREATE POLICY profiles_select_owner_or_admin
-  ON public.profiles
-  FOR SELECT
-  USING ( auth.uid() = id OR public.is_adminish() );
-
-CREATE POLICY profiles_insert_self
-  ON public.profiles
-  FOR INSERT
-  WITH CHECK ( auth.uid() = id AND role = 'pengguna' );
-
-CREATE POLICY profiles_update_owner
-  ON public.profiles
-  FOR UPDATE
-  USING ( auth.uid() = id )
-  WITH CHECK ( auth.uid() = id );
-
-CREATE POLICY profiles_update_admin
-  ON public.profiles
-  FOR UPDATE
-  USING ( public.is_adminish() )
-  WITH CHECK ( public.is_adminish() );
-
-CREATE POLICY profiles_delete_owner_or_admin
-  ON public.profiles
-  FOR DELETE
-  USING ( auth.uid() = id OR public.is_adminish() );
-
--- MATERIALS
-CREATE POLICY materials_select_public
-  ON public.materials
-  FOR SELECT
-  USING ( published = true OR public.is_adminish() OR author = auth.uid() );
-
-CREATE POLICY materials_insert_admin
-  ON public.materials
-  FOR INSERT
-  WITH CHECK ( public.is_adminish() );
-
-CREATE POLICY materials_update_admin_or_author
-  ON public.materials
-  FOR UPDATE
-  USING ( public.is_adminish() OR author = auth.uid() )
-  WITH CHECK ( public.is_adminish() OR author = auth.uid() );
-
-CREATE POLICY materials_delete_admin
-  ON public.materials
-  FOR DELETE
-  USING ( public.is_adminish() );
-
--- POSYANDU LOCATIONS & SCHEDULES
-CREATE POLICY posyandu_locations_select_public
-  ON public.posyandu_locations
-  FOR SELECT
-  USING ( true );
-
-CREATE POLICY posyandu_locations_crud_admin
-  ON public.posyandu_locations
-  FOR ALL
-  USING ( public.is_adminish() )
-  WITH CHECK ( public.is_adminish() );
-
-CREATE POLICY posyandu_schedules_select_public
-  ON public.posyandu_schedules
-  FOR SELECT
-  USING ( true );
-
-CREATE POLICY posyandu_schedules_insert_admin
-  ON public.posyandu_schedules
-  FOR INSERT
-  WITH CHECK ( public.is_adminish() );
-
-CREATE POLICY posyandu_schedules_update_admin
-  ON public.posyandu_schedules
-  FOR UPDATE
-  USING ( public.is_adminish() )
-  WITH CHECK ( public.is_adminish() );
-
-CREATE POLICY posyandu_schedules_delete_admin
-  ON public.posyandu_schedules
-  FOR DELETE
-  USING ( public.is_adminish() );
-
--- QUIZZES / QUESTIONS / CHOICES
-CREATE POLICY quizzes_select_public
-  ON public.quizzes
-  FOR SELECT
-  USING (
-    public.is_adminish()
-    OR (
-      material_id IS NOT NULL
-      AND EXISTS (
-        SELECT 1 FROM public.materials m WHERE m.id = public.quizzes.material_id AND m.published = true
-      )
-    )
-  );
-
-CREATE POLICY quizzes_crud_admin
-  ON public.quizzes
-  FOR ALL
-  USING ( public.is_adminish() )
-  WITH CHECK ( public.is_adminish() );
-
-CREATE POLICY quiz_questions_select
-  ON public.quiz_questions
-  FOR SELECT
-  USING (
-    public.is_adminish()
-    OR EXISTS (
-      SELECT 1 FROM public.quizzes q
-      WHERE q.id = public.quiz_questions.quiz_id
-        AND q.material_id IN (SELECT id FROM public.materials WHERE published = true)
-    )
-  );
-
-CREATE POLICY quiz_choices_select
-  ON public.quiz_choices
-  FOR SELECT
-  USING ( public.is_adminish() );
-
--- QUIZ ATTEMPTS & ANSWERS
-CREATE POLICY quiz_attempts_insert_owner
-  ON public.quiz_attempts
-  FOR INSERT
-  WITH CHECK ( auth.uid() IS NOT NULL AND user_id = auth.uid() );
-
-CREATE POLICY quiz_attempts_select_owner_admin
-  ON public.quiz_attempts
-  FOR SELECT
-  USING ( user_id = auth.uid() OR public.is_adminish() );
-
-CREATE POLICY quiz_attempts_update_owner
-  ON public.quiz_attempts
-  FOR UPDATE
-  USING ( user_id = auth.uid() OR public.is_adminish() )
-  WITH CHECK ( user_id = auth.uid() OR public.is_adminish() );
-
-CREATE POLICY quiz_answers_insert_owner
-  ON public.quiz_answers
-  FOR INSERT
-  WITH CHECK ( auth.uid() IS NOT NULL );
-
-CREATE POLICY quiz_answers_select_owner_admin
-  ON public.quiz_answers
-  FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.quiz_attempts a
-      WHERE a.id = public.quiz_answers.attempt_id
-        AND (a.user_id = auth.uid() OR public.is_adminish())
-    )
-  );
-
--- INVITATIONS
-CREATE POLICY invitations_insert_admin
-  ON public.invitations
-  FOR INSERT
-  WITH CHECK ( public.is_adminish() );
-
-CREATE POLICY invitations_select_admin_or_email
-  ON public.invitations
-  FOR SELECT
-  USING ( public.is_adminish() OR (auth.uid() IS NOT NULL AND auth.jwt() ->> 'email' = email) );
-
--- ACTIVITY LOGS
-CREATE POLICY activity_logs_admin_only
-  ON public.activity_logs
-  FOR ALL
-  USING ( public.is_adminish() )
-  WITH CHECK ( public.is_adminish() );
-
--- --------------------
--- End PHASE 2
--- --------------------

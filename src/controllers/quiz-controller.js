@@ -7,6 +7,7 @@ const quizSchema = Joi.object({
   title: Joi.string().trim().min(3).max(200).required(),
   description: Joi.string().trim().max(1000).optional(),
   material_id: Joi.string().uuid().optional(),
+  module_id: Joi.string().uuid().optional(),
 });
 
 const questionSchema = Joi.object({
@@ -26,6 +27,7 @@ const quizWithQuestionsSchema = Joi.object({
   title: Joi.string().trim().min(3).max(200).required(),
   description: Joi.string().trim().max(1000).optional(),
   material_id: Joi.string().uuid().optional(),
+  module_id: Joi.string().uuid().optional(),
   questions: Joi.array().items(questionSchema).min(1).required(),
 });
 
@@ -64,26 +66,53 @@ const attemptAnswersSchema = Joi.object({
 const getAllQuizzes = async (req, res) => {
   try {
     const sb = req.supabase;
+    const moduleFilter = (req.query.module_id || "").trim();
     const { data, error } = await sb
-      .from("quizzes")
+      .from("materis_quizzes")
       .select(
         `
         id,
         title,
         description,
+        time_limit_seconds,
+        passing_score,
         created_at,
-        materials (
+        module_id,
+        sub_materis (
           id,
           title
-        ),
-        profiles:created_by (
-          full_name
         )
       `
       )
       .order("created_at", { ascending: false });
+    let finalData = data;
+    let finalError = error;
+    if (!finalError && moduleFilter) {
+      // refetch with filter (cannot combine dynamically above due to builder ergonomics)
+      const filtered = await sb
+        .from("materis_quizzes")
+        .select(
+          `
+          id,
+          title,
+          description,
+          time_limit_seconds,
+          passing_score,
+          created_at,
+          module_id,
+          sub_materis (
+            id,
+            title
+          )
+        `
+        )
+        .eq("module_id", moduleFilter)
+        .order("created_at", { ascending: false });
+      finalData = filtered.data;
+      finalError = filtered.error;
+    }
 
-    if (error) {
+    if (finalError) {
       console.error("Get quizzes error:", error);
       return failure(res, "QUIZ_FETCH_ERROR", "Failed to fetch quizzes", 500);
     }
@@ -91,13 +120,55 @@ const getAllQuizzes = async (req, res) => {
       res,
       "QUIZ_FETCH_SUCCESS",
       "Quizzes retrieved successfully",
-      { items: data }
+      { items: finalData }
     );
   } catch (error) {
     console.error("Quiz controller error:", error);
     return failure(res, "INTERNAL_ERROR", "Internal server error", 500);
   }
 };
+
+// GET /api/v1/modules/:module_id/quizzes - list quizzes under a module (public)
+async function getQuizzesByModule(req, res) {
+  try {
+    const moduleId = req.params.module_id || req.params.id;
+    const sb = req.supabase;
+    const { data, error } = await sb
+      .from("materis_quizzes")
+      .select(
+        `
+        id,
+        title,
+        description,
+        time_limit_seconds,
+        passing_score,
+        created_at,
+        module_id,
+        sub_materis (
+          id,
+          title
+        )
+      `
+      )
+      .eq("module_id", moduleId)
+      .order("created_at", { ascending: false });
+    if (error) {
+      return failure(res, "QUIZ_FETCH_ERROR", "Failed to fetch quizzes", 500, {
+        details: error.message,
+      });
+    }
+    return success(
+      res,
+      "QUIZ_FETCH_SUCCESS",
+      "Quizzes retrieved successfully",
+      { items: data }
+    );
+  } catch (e) {
+    return failure(res, "INTERNAL_ERROR", "Internal server error", 500, {
+      details: e.message,
+    });
+  }
+}
 
 // GET /api/pengguna/quizzes/:id - Get quiz with questions and choices
 const getQuizById = async (req, res) => {
@@ -106,19 +177,19 @@ const getQuizById = async (req, res) => {
 
     const sb = req.supabase;
     const { data: quiz, error: quizError } = await sb
-      .from("quizzes")
+      .from("materis_quizzes")
       .select(
         `
         id,
         title,
         description,
+        time_limit_seconds,
+        passing_score,
         created_at,
-        materials (
+        module_id,
+        sub_materis (
           id,
           title
-        ),
-        profiles:created_by (
-          full_name
         )
       `
       )
@@ -131,12 +202,14 @@ const getQuizById = async (req, res) => {
 
     // Get questions with choices
     const { data: questions, error: questionsError } = await sb
-      .from("quiz_questions")
+      .from("materis_quiz_questions")
       .select(
         `
         id,
-        question,
-        quiz_choices (
+        question_text,
+        options,
+        correct_answer_index,
+        materis_quiz_choices (
           id,
           choice_text,
           is_correct
@@ -197,7 +270,7 @@ const submitQuizAnswers = async (req, res) => {
     // Check if quiz exists
     const sb = req.supabase;
     const { data: quiz, error: quizError } = await sb
-      .from("quizzes")
+      .from("materis_quizzes")
       .select("id, title")
       .eq("id", quizId)
       .single();
@@ -208,11 +281,14 @@ const submitQuizAnswers = async (req, res) => {
 
     // Get all questions for this quiz with correct answers
     const { data: questions, error: questionsError } = await sb
-      .from("quiz_questions")
+      .from("materis_quiz_questions")
       .select(
         `
         id,
-        quiz_choices (
+        question_text,
+        options,
+        correct_answer_index,
+        materis_quiz_choices (
           id,
           is_correct
         )
@@ -251,7 +327,7 @@ const submitQuizAnswers = async (req, res) => {
 
     // Save result
     const { data: result, error: resultError } = await sb
-      .from("quiz_results")
+      .from("user_quiz_attempts")
       .insert({
         quiz_id: quizId,
         user_id: userId,
@@ -303,7 +379,7 @@ const createQuizWithQuestions = async (req, res) => {
       });
     }
 
-    const { title, description, material_id, questions } = value;
+    const { title, description, material_id, module_id, questions } = value;
     const createdBy = req.user.id;
 
     // Validate that at least one choice is correct for each question
@@ -324,11 +400,14 @@ const createQuizWithQuestions = async (req, res) => {
     // Create quiz
     const sb = req.supabase;
     const { data: quiz, error: quizError } = await sb
-      .from("quizzes")
+      .from("materis_quizzes")
       .insert({
         title,
         description,
+        time_limit_seconds: null,
+        passing_score: 70,
         material_id,
+        module_id,
         created_by: createdBy,
       })
       .select()
@@ -350,10 +429,12 @@ const createQuizWithQuestions = async (req, res) => {
     for (const questionData of questions) {
       // Create question
       const { data: question, error: questionError } = await sb
-        .from("quiz_questions")
+        .from("materis_quiz_questions")
         .insert({
           quiz_id: quiz.id,
-          question: questionData.question,
+          question_text: questionData.question,
+          opotions: questionData.choices.map((c) => c.choice_text),
+          correct_answer_index: questionData.choices.findIndex((c) => c.is_correct),
         })
         .select()
         .single();
@@ -371,7 +452,7 @@ const createQuizWithQuestions = async (req, res) => {
       }));
 
       const { data: choices, error: choicesError } = await sb
-        .from("quiz_choices")
+        .from("materis_quiz_choices")
         .insert(choicesData)
         .select();
 
@@ -412,7 +493,7 @@ const deleteQuiz = async (req, res) => {
     // Check if quiz exists
     const sb = req.supabase;
     const { data: existingQuiz, error: fetchError } = await sb
-      .from("quizzes")
+      .from("materis_quizzes")
       .select("id")
       .eq("id", id)
       .single();
@@ -427,7 +508,7 @@ const deleteQuiz = async (req, res) => {
     }
 
     const { error: deleteError } = await sb
-      .from("quizzes")
+      .from("materis_quizzes")
       .delete()
       .eq("id", id);
 
@@ -463,6 +544,7 @@ module.exports = {
   deleteQuiz,
   createQuizAttempt, // new export
   updateQuiz,
+  getQuizzesByModule,
 };
 
 /**
@@ -501,7 +583,7 @@ async function createQuizAttempt(req, res) {
 
     // Fetch quiz including passing_score
     const { data: quiz, error: quizErr } = await adminClient
-      .from("quizzes")
+      .from("materis_quizzes")
       .select("id, passing_score")
       .eq("id", quizId)
       .single();
@@ -511,7 +593,7 @@ async function createQuizAttempt(req, res) {
 
     // Fetch questions (ids only) for denominator
     const { data: questions, error: qErr } = await adminClient
-      .from("quiz_questions")
+      .from("materis_quiz_questions")
       .select("id")
       .eq("quiz_id", quizId);
     if (qErr) {
@@ -545,7 +627,7 @@ async function createQuizAttempt(req, res) {
     let correctChoiceMap = new Map(); // question_id -> Set(correct choice ids)
     if (req.supabaseAdmin) {
       const { data: correctChoices, error: ccErr } = await adminClient
-        .from("quiz_choices")
+        .from("materis_quiz_choices")
         .select("id, question_id, is_correct")
         .in("question_id", [...questionIdSet]);
       if (ccErr) {
@@ -605,7 +687,7 @@ async function createQuizAttempt(req, res) {
 
     // Insert attempt
     const { data: attempt, error: attemptErr } = await req.supabase
-      .from("quiz_attempts")
+      .from("user_quiz_attempts")
       .insert({
         quiz_id: quizId,
         user_id: userId,
@@ -639,7 +721,7 @@ async function createQuizAttempt(req, res) {
         .insert(answersPayload);
       if (ansErr) {
         // best-effort rollback: delete attempt
-        await req.supabase.from("quiz_attempts").delete().eq("id", attempt.id);
+        await req.supabase.from("user_quiz_attempts").delete().eq("id", attempt.id);
         return failure(
           res,
           "QUIZ_ANSWERS_INSERT_ERROR",
@@ -687,7 +769,7 @@ async function updateQuiz(req, res) {
     }
     const sb = req.supabase;
     const { data: existing, error: fetchErr } = await sb
-      .from("quizzes")
+      .from("materis_quizzes")
       .select("id")
       .eq("id", id)
       .single();
@@ -696,7 +778,7 @@ async function updateQuiz(req, res) {
     }
     const updatePayload = { ...value, updated_at: new Date().toISOString() };
     const { data: updated, error: updErr } = await sb
-      .from("quizzes")
+      .from("materis_quizzes")
       .update(updatePayload)
       .eq("id", id)
       .select("id, title, description, material_id, created_at, updated_at")

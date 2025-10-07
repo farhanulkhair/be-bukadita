@@ -1,22 +1,30 @@
 const express = require("express");
 const {
   getAllMaterials,
-  getMaterialBySlug,
+  getMaterialById,
   createMaterial,
   updateMaterial,
   deleteMaterial,
   getPublicMaterials,
 } = require("../../controllers/material-controller");
+const {
+  getPoinsBySubMateri,
+  createPoin,
+} = require("../../controllers/poin-controller");
 const authMiddleware = require("../../middlewares/auth-middleware");
 const { requireAdmin } = require("../../middlewares/role-middleware");
 
 const router = express.Router();
 
 // Materials (public read of published, authenticated may later extend)
-// Public list (published only) & detail by slug; if authenticated admin/author may see drafts
+// Public list (published only) & detail by ID; if authenticated admin/author may see drafts
 router.get("/public", getPublicMaterials); // strictly published (anon)
-router.get("/", getAllMaterials); // legacy / mixed (admin can see drafts)
-router.get("/:slug", getMaterialBySlug); // public detail by slug
+router.get("/", getAllMaterials); // admin can see all materials with pagination
+router.get("/:id", getMaterialById); // public detail by ID with poin_details
+
+// Nested poin routes - support both admin and public access
+router.get("/:subMateriId/poins", getPoinsBySubMateri); // Get poins for a material
+router.post("/:subMateriId/poins", authMiddleware, requireAdmin, createPoin); // Admin can add poins to any material
 
 // Admin protected CRUD
 router.post("/", authMiddleware, requireAdmin, createMaterial);
