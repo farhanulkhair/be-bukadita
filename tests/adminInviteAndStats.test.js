@@ -85,18 +85,16 @@ describe("Admin invite & stats endpoints", () => {
         );
         const userId = payload?.sub;
         if (userId) {
-          await admin
-            .from("profiles")
-            .upsert(
-              {
-                id: userId,
-                email: payload.email || "superadmin_test@example.com",
-                full_name: "Test Superadmin",
-                role: "superadmin",
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: "id" }
-            );
+          await admin.from("profiles").upsert(
+            {
+              id: userId,
+              email: payload.email || "superadmin_test@example.com",
+              full_name: "Test Superadmin",
+              role: "superadmin",
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "id" }
+          );
         }
       } catch (e) {
         // ignore decoding issues
@@ -133,6 +131,5 @@ describe("Admin invite & stats endpoints", () => {
     expect(data).toHaveProperty("users");
     expect(data).toHaveProperty("materials");
     expect(data).toHaveProperty("quizzes");
-    expect(data).toHaveProperty("schedules");
   });
 });

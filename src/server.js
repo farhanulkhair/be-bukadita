@@ -26,8 +26,8 @@ const server = app.listen(PORT, () => {
   console.log("📋 Available v1 endpoints:");
   console.log("   Auth:       /api/v1/auth/*");
   console.log("   Materials:  /api/v1/materials/*");
+  console.log("   Modules:    /api/v1/modules/*");
   console.log("   Quizzes:    /api/v1/quizzes/*");
-  console.log("   Schedules:  /api/v1/schedules/*");
   console.log("   Users:      /api/v1/users/me");
   console.log("   Admin:      /api/v1/admin/*");
   console.log("");
