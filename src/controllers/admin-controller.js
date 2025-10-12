@@ -64,6 +64,11 @@ const createUserSchema = Joi.object({
       "string.pattern.base":
         "Phone number must start with 08 and be 10-13 digits long (e.g., 08123456789)",
     }),
+  address: Joi.string().trim().max(500).allow("", null).optional(),
+  profil_url: Joi.string().trim().uri().allow("", null).optional(),
+  date_of_birth: Joi.date().iso().max("now").allow(null).optional().messages({
+    "date.max": "Tanggal lahir tidak boleh lebih dari hari ini",
+  }),
   role: Joi.string().valid("pengguna", "admin").default("pengguna"),
 });
 
@@ -81,6 +86,11 @@ const updateUserSchema = Joi.object({
         "Phone number must start with 08 and be 10-13 digits long (e.g., 08123456789)",
     }),
   email: Joi.string().email().optional(),
+  address: Joi.string().trim().max(500).allow("", null).optional(),
+  profil_url: Joi.string().trim().uri().allow("", null).optional(),
+  date_of_birth: Joi.date().iso().max("now").allow(null).optional().messages({
+    "date.max": "Tanggal lahir tidak boleh lebih dari hari ini",
+  }),
 });
 
 // GET /api/admin/users - Get all user profiles (admin only) with role-aware visibility rules
@@ -107,9 +117,12 @@ const getAllUsers = async (req, res) => {
 
     let query = client
       .from("profiles")
-      .select("id, full_name, phone, email, role, created_at", {
-        count: "exact",
-      })
+      .select(
+        "id, full_name, phone, email, address, profil_url, date_of_birth, role, created_at",
+        {
+          count: "exact",
+        }
+      )
       .in("role", allowedRoles);
 
     // Superadmin: sembunyikan akun dirinya sendiri agar tidak bisa menghapus / mengubah diri secara tidak sengaja
@@ -221,7 +234,16 @@ const createUser = async (req, res) => {
       );
     }
 
-    const { email, password, full_name, phone, role } = value;
+    const {
+      email,
+      password,
+      full_name,
+      phone,
+      address,
+      profil_url,
+      date_of_birth,
+      role,
+    } = value;
 
     // Only superadmin can create another admin
     const callerRole =
@@ -298,6 +320,9 @@ const createUser = async (req, res) => {
               full_name,
               phone: phone || null,
               email: authData.user.email,
+              address: address || null,
+              profil_url: profil_url || null,
+              date_of_birth: date_of_birth || null,
               role,
               created_at: now,
               updated_at: now,
@@ -317,6 +342,9 @@ const createUser = async (req, res) => {
                 full_name,
                 phone: phone || null,
                 email: authData.user.email,
+                address: address || null,
+                profil_url: profil_url || null,
+                date_of_birth: date_of_birth || null,
                 created_at: now,
                 updated_at: now,
               })
@@ -369,6 +397,9 @@ const createUser = async (req, res) => {
             full_name,
             phone: phone || null,
             email: authData.user.email,
+            address: address || null,
+            profil_url: profil_url || null,
+            date_of_birth: date_of_birth || null,
             role,
             updated_at: now,
           })
@@ -387,6 +418,9 @@ const createUser = async (req, res) => {
               full_name,
               phone: phone || null,
               email: authData.user.email,
+              address: address || null,
+              profil_url: profil_url || null,
+              date_of_birth: date_of_birth || null,
               updated_at: now,
             })
             .eq("id", userId)
@@ -525,9 +559,18 @@ const updateUser = async (req, res) => {
       );
     }
 
-    const { full_name, phone, email } = value;
+    const { full_name, phone, email, address, profil_url, date_of_birth } =
+      value;
 
-    console.log("Admin updating user:", { id, full_name, phone, email });
+    console.log("Admin updating user:", {
+      id,
+      full_name,
+      phone,
+      email,
+      address,
+      profil_url,
+      date_of_birth,
+    });
     console.log("Admin user:", req.user.id, req.user.profile?.role);
 
     // Use service role for admin updates
@@ -561,6 +604,10 @@ const updateUser = async (req, res) => {
     if (full_name !== undefined) updateData.full_name = full_name;
     if (phone !== undefined) updateData.phone = phone || null;
     if (email !== undefined) updateData.email = email;
+    if (address !== undefined) updateData.address = address || null;
+    if (profil_url !== undefined) updateData.profil_url = profil_url || null;
+    if (date_of_birth !== undefined)
+      updateData.date_of_birth = date_of_birth || null;
 
     // Add updated_at timestamp
     updateData.updated_at = new Date().toISOString();

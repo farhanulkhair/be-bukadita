@@ -26,6 +26,10 @@ router.get("/:id", getMaterialById); // public detail by ID with poin_details
 router.get("/:subMateriId/poins", getPoinsBySubMateri); // Get poins for a material
 router.post("/:subMateriId/poins", authMiddleware, requireAdmin, createPoin); // Admin can add poins to any material
 
+// Quiz routes for users
+const { getQuizForSubMateri } = require("../../controllers/quiz-controller");
+router.get("/:subMateriId/quiz", getQuizForSubMateri); // Get quiz for sub_materi (published only for users)
+
 // Admin protected CRUD
 router.post("/", authMiddleware, requireAdmin, createMaterial);
 router.put("/:id", authMiddleware, requireAdmin, updateMaterial);

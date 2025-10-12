@@ -29,7 +29,7 @@ async function getModules(req, res) {
     let query = sb
       .from("modules")
       .select(
-        "id, title, slug, description, published, created_at, updated_at, duration_label, duration_minutes, lessons, difficulty, category",
+        "id, title, slug, description, published, created_at, updated_at, duration_label, duration_minutes, lessons, category",
         {
           count: "exact",
         }
@@ -91,7 +91,7 @@ async function getModuleById(req, res) {
     const { data: module, error: modErr } = await sb
       .from("modules")
       .select(
-        "id, title, slug, description, published, created_at, updated_at, duration_label, duration_minutes, lessons, difficulty, category"
+        "id, title, slug, description, published, created_at, updated_at, duration_label, duration_minutes, lessons, category"
       )
       .eq("id", id)
       .maybeSingle();
@@ -197,11 +197,10 @@ async function createModule(req, res) {
         duration_label: value.duration_label || null,
         duration_minutes: value.duration_minutes || null,
         lessons: value.lessons || null,
-        difficulty: value.difficulty || null,
         category: value.category || null,
       })
       .select(
-        "id, title, slug, description, published, created_at, updated_at, duration_label, duration_minutes, lessons, difficulty, category"
+        "id, title, slug, description, published, created_at, updated_at, duration_label, duration_minutes, lessons, category"
       )
       .single();
     if (error) {
@@ -257,7 +256,7 @@ async function updateModule(req, res) {
       .update(payload)
       .eq("id", id)
       .select(
-        "id, title, slug, description, published, created_at, updated_at, duration_label, duration_minutes, lessons, difficulty, category"
+        "id, title, slug, description, published, created_at, updated_at, duration_label, duration_minutes, lessons, category"
       )
       .single();
     if (error) {

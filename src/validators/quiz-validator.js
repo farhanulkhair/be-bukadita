@@ -1,122 +1,216 @@
 const Joi = require("joi");
 
-// Schema untuk membuat kuis baru
-const createMateriQuizSchema = Joi.object({
-  judul: Joi.string().trim().min(3).max(200).required().messages({
-    "string.min": "Judul kuis minimal 3 karakter",
-    "string.max": "Judul kuis maksimal 200 karakter",
-    "any.required": "Judul kuis wajib diisi",
+// Schema untuk membuat quiz baru
+const createQuizSchema = Joi.object({
+  title: Joi.string().trim().min(3).max(200).required().messages({
+    "string.empty": "Judul quiz wajib diisi",
+    "string.min": "Judul quiz minimal 3 karakter",
+    "string.max": "Judul quiz maksimal 200 karakter",
+    "any.required": "Judul quiz wajib diisi",
   }),
-  deskripsi: Joi.string().trim().max(1000).optional().allow(""),
+
   sub_materi_id: Joi.string().uuid().required().messages({
-    "string.guid": "Sub Materi ID harus berformat UUID yang valid",
-    "any.required": "Sub Materi ID wajib diisi",
+    "string.empty": "Sub materi wajib dipilih",
+    "string.guid": "Format sub materi ID tidak valid",
+    "any.required": "Sub materi wajib dipilih",
   }),
-  passing_score: Joi.number().integer().min(1).max(100).optional().default(70),
-  time_limit: Joi.number().integer().min(60).optional(), // dalam detik
+
+  description: Joi.string().trim().max(1000).allow("", null).messages({
+    "string.max": "Deskripsi maksimal 1000 karakter",
+  }),
+
+  time_limit_seconds: Joi.number()
+    .integer()
+    .min(60)
+    .max(7200)
+    .default(600)
+    .messages({
+      "number.base": "Batas waktu harus berupa angka",
+      "number.integer": "Batas waktu harus berupa bilangan bulat",
+      "number.min": "Batas waktu minimal 60 detik (1 menit)",
+      "number.max": "Batas waktu maksimal 7200 detik (2 jam)",
+    }),
+
+  passing_score: Joi.number().integer().min(0).max(100).default(70).messages({
+    "number.base": "Nilai kelulusan harus berupa angka",
+    "number.integer": "Nilai kelulusan harus berupa bilangan bulat",
+    "number.min": "Nilai kelulusan minimal 0",
+    "number.max": "Nilai kelulusan maksimal 100",
+  }),
+
+  published: Joi.boolean().default(false),
+
+  quiz_type: Joi.string().valid("sub", "module").default("sub"),
 });
 
-// Schema untuk update kuis
-const updateMateriQuizSchema = Joi.object({
-  judul: Joi.string().trim().min(3).max(200).optional(),
-  deskripsi: Joi.string().trim().max(1000).optional().allow(""),
-  sub_materi_id: Joi.string().uuid().optional(),
-  passing_score: Joi.number().integer().min(1).max(100).optional(),
-  time_limit: Joi.number().integer().min(60).optional(),
-})
-  .min(1)
-  .messages({
-    "object.min": "Minimal satu field harus diubah",
-  });
-
-// Schema untuk membuat pertanyaan kuis
-const createQuizQuestionSchema = Joi.object({
-  pertanyaan: Joi.string().trim().min(5).required().messages({
-    "string.min": "Pertanyaan minimal 5 karakter",
-    "any.required": "Pertanyaan wajib diisi",
+// Schema untuk update quiz
+const updateQuizSchema = Joi.object({
+  title: Joi.string().trim().min(3).max(200).messages({
+    "string.empty": "Judul quiz tidak boleh kosong",
+    "string.min": "Judul quiz minimal 3 karakter",
+    "string.max": "Judul quiz maksimal 200 karakter",
   }),
+
+  sub_materi_id: Joi.string().uuid().messages({
+    "string.guid": "Format sub materi ID tidak valid",
+  }),
+
+  description: Joi.string().trim().max(1000).allow("", null).messages({
+    "string.max": "Deskripsi maksimal 1000 karakter",
+  }),
+
+  time_limit_seconds: Joi.number().integer().min(60).max(7200).messages({
+    "number.base": "Batas waktu harus berupa angka",
+    "number.integer": "Batas waktu harus berupa bilangan bulat",
+    "number.min": "Batas waktu minimal 60 detik (1 menit)",
+    "number.max": "Batas waktu maksimal 7200 detik (2 jam)",
+  }),
+
+  passing_score: Joi.number().integer().min(0).max(100).messages({
+    "number.base": "Nilai kelulusan harus berupa angka",
+    "number.integer": "Nilai kelulusan harus berupa bilangan bulat",
+    "number.min": "Nilai kelulusan minimal 0",
+    "number.max": "Nilai kelulusan maksimal 100",
+  }),
+
+  published: Joi.boolean(),
+
+  quiz_type: Joi.string().valid("sub", "module"),
+}).min(1);
+
+// Schema untuk membuat pertanyaan quiz
+const createQuestionSchema = Joi.object({
+  question_text: Joi.string().trim().min(10).max(1000).required().messages({
+    "string.empty": "Teks pertanyaan wajib diisi",
+    "string.min": "Teks pertanyaan minimal 10 karakter",
+    "string.max": "Teks pertanyaan maksimal 1000 karakter",
+    "any.required": "Teks pertanyaan wajib diisi",
+  }),
+
   options: Joi.array()
-    .items(Joi.string().trim().min(1))
+    .items(Joi.string().trim().min(1).max(300))
     .min(2)
-    .max(5)
+    .max(4)
     .required()
     .messages({
-      "array.min": "Minimal 2 pilihan jawaban",
-      "array.max": "Maksimal 5 pilihan jawaban",
+      "array.min": "Minimal harus ada 2 pilihan jawaban",
+      "array.max": "Maksimal 4 pilihan jawaban",
       "any.required": "Pilihan jawaban wajib diisi",
     }),
-  correct_answer: Joi.number().integer().min(0).required().messages({
-    "any.required": "Index jawaban benar wajib diisi",
+
+  correct_answer_index: Joi.number()
+    .integer()
+    .min(0)
+    .max(3)
+    .required()
+    .messages({
+      "number.base": "Indeks jawaban benar harus berupa angka",
+      "number.integer": "Indeks jawaban benar harus berupa bilangan bulat",
+      "number.min": "Indeks jawaban benar minimal 0",
+      "number.max": "Indeks jawaban benar maksimal 3",
+      "any.required": "Jawaban yang benar wajib dipilih",
+    }),
+
+  explanation: Joi.string().trim().max(500).allow("", null).messages({
+    "string.max": "Penjelasan maksimal 500 karakter",
   }),
-  quiz_id: Joi.string().uuid().required().messages({
-    "string.guid": "Quiz ID harus berformat UUID yang valid",
-    "any.required": "Quiz ID wajib diisi",
-  }),
-  order_index: Joi.number().integer().min(0).optional().default(0),
+
+  order_index: Joi.number().integer().min(0).default(0),
 })
   .custom((value, helpers) => {
-    // Validasi bahwa correct_answer index valid terhadap options array
-    if (value.correct_answer >= value.options.length) {
+    // Validasi bahwa correct_answer_index valid terhadap options array
+    if (value.correct_answer_index >= value.options.length) {
       return helpers.error("custom.correctAnswerOutOfBounds");
     }
     return value;
-  }, "Validate correct_answer index")
+  }, "Validate correct_answer_index")
   .messages({
     "custom.correctAnswerOutOfBounds":
-      "Index jawaban benar melebihi jumlah pilihan",
+      "Indeks jawaban benar melebihi jumlah pilihan",
   });
 
-// Schema untuk update pertanyaan kuis
-const updateQuizQuestionSchema = Joi.object({
-  pertanyaan: Joi.string().trim().min(5).optional(),
+// Schema untuk update pertanyaan
+const updateQuestionSchema = Joi.object({
+  question_text: Joi.string().trim().min(10).max(1000).messages({
+    "string.empty": "Teks pertanyaan tidak boleh kosong",
+    "string.min": "Teks pertanyaan minimal 10 karakter",
+    "string.max": "Teks pertanyaan maksimal 1000 karakter",
+  }),
+
   options: Joi.array()
-    .items(Joi.string().trim().min(1))
+    .items(Joi.string().trim().min(1).max(300))
     .min(2)
-    .max(5)
-    .optional(),
-  correct_answer: Joi.number().integer().min(0).optional(),
-  quiz_id: Joi.string().uuid().optional(),
-  order_index: Joi.number().integer().min(0).optional(),
+    .max(4)
+    .messages({
+      "array.min": "Minimal harus ada 2 pilihan jawaban",
+      "array.max": "Maksimal 4 pilihan jawaban",
+    }),
+
+  correct_answer_index: Joi.number().integer().min(0).max(3).messages({
+    "number.base": "Indeks jawaban benar harus berupa angka",
+    "number.integer": "Indeks jawaban benar harus berupa bilangan bulat",
+    "number.min": "Indeks jawaban benar minimal 0",
+    "number.max": "Indeks jawaban benar maksimal 3",
+  }),
+
+  explanation: Joi.string().trim().max(500).allow("", null).messages({
+    "string.max": "Penjelasan maksimal 500 karakter",
+  }),
+
+  order_index: Joi.number().integer().min(0),
 })
   .min(1)
-  .messages({
-    "object.min": "Minimal satu field harus diubah",
-  })
   .custom((value, helpers) => {
-    // Validasi bahwa correct_answer index valid jika ada options
+    // Validasi bahwa correct_answer_index valid jika ada options
     if (
       value.options &&
-      value.correct_answer !== undefined &&
-      value.correct_answer >= value.options.length
+      value.correct_answer_index !== undefined &&
+      value.correct_answer_index >= value.options.length
     ) {
       return helpers.error("custom.correctAnswerOutOfBounds");
     }
     return value;
-  }, "Validate correct_answer index")
+  }, "Validate correct_answer_index")
   .messages({
     "custom.correctAnswerOutOfBounds":
-      "Index jawaban benar melebihi jumlah pilihan",
+      "Indeks jawaban benar melebihi jumlah pilihan",
   });
 
-// Schema untuk submit attempt kuis
-const submitQuizAttemptSchema = Joi.object({
-  answers: Joi.object()
-    .pattern(
-      Joi.string().uuid(), // question_id
-      Joi.number().integer().min(0) // selected_option_index
+// Schema untuk submit quiz answers
+const submitQuizAnswersSchema = Joi.object({
+  answers: Joi.array()
+    .items(
+      Joi.object({
+        question_id: Joi.string().uuid().required().messages({
+          "string.guid": "Format question ID tidak valid",
+          "any.required": "Question ID wajib diisi",
+        }),
+        selected_option_index: Joi.number()
+          .integer()
+          .min(0)
+          .max(3)
+          .required()
+          .messages({
+            "number.base": "Pilihan jawaban harus berupa angka",
+            "number.integer": "Pilihan jawaban harus berupa bilangan bulat",
+            "number.min": "Pilihan jawaban minimal 0",
+            "number.max": "Pilihan jawaban maksimal 3",
+            "any.required": "Pilihan jawaban wajib diisi",
+          }),
+      })
     )
     .min(1)
     .required()
     .messages({
-      "object.min": "Minimal satu jawaban harus diisi",
+      "array.min": "Minimal satu jawaban harus diisi",
       "any.required": "Jawaban wajib diisi",
     }),
 });
 
 module.exports = {
-  createMateriQuizSchema,
-  updateMateriQuizSchema,
-  createQuizQuestionSchema,
-  updateQuizQuestionSchema,
-  submitQuizAttemptSchema,
+  createQuizSchema,
+  updateQuizSchema,
+  createQuestionSchema,
+  updateQuestionSchema,
+  submitQuizAnswersSchema,
 };

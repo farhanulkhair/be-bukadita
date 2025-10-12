@@ -10,13 +10,20 @@ const {
 } = require("../../controllers/module-controller");
 
 const router = express.Router();
-const { getQuizzesByModule } = require("../../controllers/quiz-controller");
 const { createMaterial } = require("../../controllers/material-controller");
 
 // Public read
 router.get("/", getModules);
 router.get("/:id", getModuleById);
-router.get("/:module_id/quizzes", getQuizzesByModule);
+
+// NOTE: Module quizzes endpoint temporarily disabled - use /admin/quizzes with module filter
+router.get("/:module_id/quizzes", (req, res) => {
+  return res.status(501).json({
+    success: false,
+    message:
+      "Module quizzes endpoint not implemented. Use /api/v1/admin/quizzes with filtering.",
+  });
+});
 
 // Admin-only CRUD
 router.post("/", authMiddleware, requireAdmin, createModule);

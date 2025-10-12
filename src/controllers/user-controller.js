@@ -1,5 +1,7 @@
 const Joi = require("joi");
 const { success, failure } = require("../utils/respond");
+const multer = require("multer");
+const path = require("path");
 
 // Validation schema for updating own profile
 const updateOwnProfileSchema = Joi.object({
@@ -13,6 +15,11 @@ const updateOwnProfileSchema = Joi.object({
     })
     .optional(),
   email: Joi.string().trim().email().optional(),
+  address: Joi.string().trim().max(500).allow("", null).optional(),
+  profil_url: Joi.string().trim().uri().allow("", null).optional(),
+  date_of_birth: Joi.date().iso().max("now").allow(null).optional().messages({
+    "date.max": "Tanggal lahir tidak boleh lebih dari hari ini",
+  }),
 })
   .min(1)
   .messages({
@@ -30,7 +37,9 @@ async function getMyProfile(req, res) {
     const client = req.supabase; // anon or user client supplied via middleware/auth
     const { data: profile, error } = await client
       .from("profiles")
-      .select("id, full_name, phone, email, role, created_at, updated_at")
+      .select(
+        "id, full_name, phone, email, address, profil_url, date_of_birth, role, created_at, updated_at"
+      )
       .eq("id", userId)
       .maybeSingle();
 
@@ -111,6 +120,9 @@ async function updateMyProfile(req, res) {
         full_name: baseFullName,
         phone: value.phone || "",
         email: value.email || req.user?.email,
+        address: value.address || null,
+        profil_url: value.profil_url || null,
+        date_of_birth: value.date_of_birth || null,
         role: "pengguna", // enforce default role
         created_at: now,
         updated_at: now,
@@ -149,7 +161,9 @@ async function updateMyProfile(req, res) {
       const { data: created, error: createErr } = await client
         .from("profiles")
         .insert(insertPayload)
-        .select("id, full_name, phone, email, role, created_at, updated_at")
+        .select(
+          "id, full_name, phone, email, address, profil_url, date_of_birth, role, created_at, updated_at"
+        )
         .single();
       if (createErr) {
         return failure(
@@ -207,7 +221,9 @@ async function updateMyProfile(req, res) {
       .from("profiles")
       .update(updatePayload)
       .eq("id", userId)
-      .select("id, full_name, phone, email, role, created_at, updated_at")
+      .select(
+        "id, full_name, phone, email, address, profil_url, date_of_birth, role, created_at, updated_at"
+      )
       .single();
 
     if (updErr) {
@@ -230,4 +246,193 @@ async function updateMyProfile(req, res) {
   }
 }
 
-module.exports = { getMyProfile, updateMyProfile };
+// Multer configuration for profile photo upload
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept only image files
+    const allowedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files (JPEG, PNG, WebP) are allowed"), false);
+    }
+  },
+});
+
+// POST /api/v1/users/profile/upload-photo - Upload profile photo
+async function uploadProfilePhoto(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return failure(res, "USER_UNAUTHORIZED", "Unauthorized", 401);
+    }
+
+    if (!req.file) {
+      return failure(res, "FILE_MISSING", "No file uploaded", 400);
+    }
+
+    const client = req.supabase;
+    const adminClient = req.supabaseAdmin;
+
+    // Generate unique filename
+    const fileExtension = path.extname(req.file.originalname);
+    const filename = `${userId}-${Date.now()}${fileExtension}`;
+    const filePath = `profile-photos/${filename}`;
+
+    // Upload to Supabase Storage (foto_profil bucket)
+    const { data: uploadData, error: uploadError } = await adminClient.storage
+      .from("foto_profil")
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: false, // Don't overwrite existing files
+      });
+
+    if (uploadError) {
+      console.error("Upload error:", uploadError);
+      return failure(res, "UPLOAD_ERROR", uploadError.message, 500);
+    }
+
+    // Get public URL for the uploaded file
+    const { data: urlData } = adminClient.storage
+      .from("foto_profil")
+      .getPublicUrl(filePath);
+
+    const publicUrl = urlData.publicUrl;
+
+    // Update user profile with new photo URL
+    const { data: updatedProfile, error: updateError } = await client
+      .from("profiles")
+      .update({
+        profil_url: publicUrl,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", userId)
+      .select(
+        "id, full_name, phone, email, address, profil_url, date_of_birth, role, created_at, updated_at"
+      )
+      .single();
+
+    if (updateError) {
+      // If profile update fails, try to delete the uploaded file
+      await adminClient.storage.from("foto_profil").remove([filePath]);
+      return failure(res, "PROFILE_UPDATE_ERROR", updateError.message, 500);
+    }
+
+    return success(
+      res,
+      "PROFILE_PHOTO_UPLOAD_SUCCESS",
+      "Foto profil berhasil diupload",
+      {
+        profile: updatedProfile,
+        photo_url: publicUrl,
+        filename: filename,
+      }
+    );
+  } catch (error) {
+    console.error("uploadProfilePhoto error:", error);
+    return failure(res, "INTERNAL_ERROR", "Internal server error", 500, {
+      details: error.message,
+    });
+  }
+}
+
+// DELETE /api/v1/users/profile/photo - Delete profile photo
+async function deleteProfilePhoto(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return failure(res, "USER_UNAUTHORIZED", "Unauthorized", 401);
+    }
+
+    const client = req.supabase;
+    const adminClient = req.supabaseAdmin;
+
+    // Get current profile to find existing photo
+    const { data: profile, error: fetchError } = await client
+      .from("profiles")
+      .select("profil_url")
+      .eq("id", userId)
+      .single();
+
+    if (fetchError || !profile) {
+      return failure(res, "PROFILE_NOT_FOUND", "Profile tidak ditemukan", 404);
+    }
+
+    // Extract filename from URL if photo exists
+    let filePath = null;
+    if (profile.profil_url) {
+      try {
+        const url = new URL(profile.profil_url);
+        const pathParts = url.pathname.split("/");
+        const bucketIndex = pathParts.findIndex(
+          (part) => part === "foto_profil"
+        );
+        if (bucketIndex !== -1 && pathParts.length > bucketIndex + 1) {
+          filePath = pathParts.slice(bucketIndex + 1).join("/");
+        }
+      } catch (e) {
+        console.error("Error parsing photo URL:", e);
+      }
+    }
+
+    // Update profile to remove photo URL
+    const { data: updatedProfile, error: updateError } = await client
+      .from("profiles")
+      .update({
+        profil_url: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", userId)
+      .select(
+        "id, full_name, phone, email, address, profil_url, date_of_birth, role, created_at, updated_at"
+      )
+      .single();
+
+    if (updateError) {
+      return failure(res, "PROFILE_UPDATE_ERROR", updateError.message, 500);
+    }
+
+    // Try to delete file from storage if path was found
+    if (filePath) {
+      try {
+        const { error: deleteError } = await adminClient.storage
+          .from("foto_profil")
+          .remove([filePath]);
+
+        if (deleteError) {
+          console.error("Storage delete error:", deleteError);
+          // Don't fail the request if storage delete fails
+        }
+      } catch (e) {
+        console.error("Exception during file deletion:", e);
+      }
+    }
+
+    return success(
+      res,
+      "PROFILE_PHOTO_DELETE_SUCCESS",
+      "Foto profil berhasil dihapus",
+      {
+        profile: updatedProfile,
+      }
+    );
+  } catch (error) {
+    console.error("deleteProfilePhoto error:", error);
+    return failure(res, "INTERNAL_ERROR", "Internal server error", 500, {
+      details: error.message,
+    });
+  }
+}
+
+module.exports = {
+  getMyProfile,
+  updateMyProfile,
+  uploadProfilePhoto,
+  deleteProfilePhoto,
+  upload, // Export multer instance for use in routes
+};
