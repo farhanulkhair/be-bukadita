@@ -1,33 +1,45 @@
 const { success, failure } = require("../utils/respond");
 
 // Menandai poin sebagai selesai
-// POST /api/v1/materials/:materi_id/points/:poin_id/complete
+// POST /api/v1/progress/materials/:materi_id/poins/:poin_id/complete
+// Body: { module_id: number } - required for grouping
 async function completePoin(req, res) {
   try {
     const { materi_id, poin_id } = req.params;
+    const { module_id } = req.body; // Get module_id from request body
     const userId = req.user.id;
 
-    // Validasi poin exists dan belongs to materi
-    const { data: poin, error: poinError } = await req.supabase
-      .from("poin_details")
-      .select("id, sub_materi_id, order_index")
-      .eq("id", poin_id)
-      .eq("sub_materi_id", materi_id)
-      .single();
-
-    if (poinError || !poin) {
-      return failure(res, "POIN_NOT_FOUND", "Poin tidak ditemukan", 404);
+    // Validate module_id
+    if (!module_id) {
+      return failure(
+        res,
+        "MISSING_MODULE_ID",
+        "module_id is required in request body",
+        400
+      );
     }
+
+    // IMPORTANT: Frontend has static poin data (dummy data)
+    // Backend only tracks completion, does NOT validate poin existence
+    // Frontend is responsible for sending valid poin_id and materi_id
+
+    console.log("DEBUG: Completing poin:", {
+      userId,
+      module_id,
+      materi_id,
+      poin_id,
+    });
 
     // Cek apakah sudah completed sebelumnya
     const { data: existingProgress } = await req.supabase
-      .from("user_poin_progress")
-      .select("id, completed")
+      .from("user_poin_progress_simple")
+      .select("id, is_completed")
       .eq("user_id", userId)
       .eq("poin_id", poin_id)
       .maybeSingle();
 
-    if (existingProgress?.completed) {
+    if (existingProgress?.is_completed) {
+      console.log("DEBUG: Poin already completed");
       return success(
         res,
         "POIN_ALREADY_COMPLETED",
@@ -37,18 +49,29 @@ async function completePoin(req, res) {
     }
 
     // Tandai poin sebagai selesai
+    // Note: No validation against poin_details table
+    // Frontend static data is the source of truth
     const { data: progress, error: progressError } = await req.supabase
-      .from("user_poin_progress")
-      .upsert({
-        user_id: userId,
-        poin_id,
-        completed: true,
-        completed_at: new Date().toISOString(),
-      })
+      .from("user_poin_progress_simple")
+      .upsert(
+        {
+          user_id: userId,
+          module_id: parseInt(module_id),
+          sub_materi_id: materi_id,
+          poin_id,
+          is_completed: true,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "user_id,poin_id", // Specify unique constraint columns
+        }
+      )
       .select()
       .single();
 
     if (progressError) {
+      console.error("DEBUG: Error saving poin progress:", progressError);
       return failure(
         res,
         "POIN_PROGRESS_ERROR",
@@ -60,8 +83,10 @@ async function completePoin(req, res) {
       );
     }
 
-    // Update progress sub_materi jika semua poin sudah selesai
-    await updateSubMateriProgress(req.supabase, userId, materi_id);
+    console.log("DEBUG: Poin completed successfully:", progress);
+
+    // Update progress sub_materi after completing poin
+    await updateSubMateriProgress(req.supabase, userId, materi_id, module_id);
 
     return success(
       res,
@@ -78,53 +103,114 @@ async function completePoin(req, res) {
 }
 
 // Helper function untuk update progress sub_materi
-async function updateSubMateriProgress(supabase, userId, subMateriId) {
+// SIMPLIFIED: Backend only updates records, does NOT calculate from database
+// Frontend is responsible for determining completion status and progress percentage
+async function updateSubMateriProgress(
+  supabase,
+  userId,
+  subMateriId,
+  moduleId
+) {
   try {
-    // Hitung total poin dan poin yang sudah selesai
-    const { data: allPoin } = await supabase
-      .from("poin_details")
-      .select("id")
-      .eq("sub_materi_id", subMateriId);
-
-    const { data: completedPoin } = await supabase
-      .from("user_poin_progress")
-      .select("poin_id")
-      .eq("user_id", userId)
-      .eq("completed", true)
-      .in("poin_id", allPoin?.map((p) => p.id) || []);
-
-    const totalPoin = allPoin?.length || 0;
-    const completedCount = completedPoin?.length || 0;
-    const allPoinsCompleted = totalPoin > 0 && completedCount === totalPoin;
-
-    // Update progress sub_materi
-    await supabase.from("user_sub_materi_progress").upsert({
-      user_id: userId,
-      sub_materi_id: subMateriId,
-      completed: allPoinsCompleted,
-      completed_at: allPoinsCompleted ? new Date().toISOString() : null,
-      progress_percentage:
-        totalPoin > 0 ? Math.round((completedCount / totalPoin) * 100) : 0,
+    console.log("DEBUG: Updating sub-materi progress:", {
+      userId,
+      moduleId,
+      subMateriId,
     });
 
-    // Jika sub_materi selesai, update progress module
-    if (allPoinsCompleted) {
-      const { data: subMateri } = await supabase
-        .from("sub_materis")
-        .select("module_id")
-        .eq("id", subMateriId)
-        .single();
+    // Get all completed poins for this sub-materi
+    const { data: completedPoins } = await supabase
+      .from("user_poin_progress_simple")
+      .select("poin_id")
+      .eq("user_id", userId)
+      .eq("sub_materi_id", subMateriId)
+      .eq("is_completed", true);
 
-      if (subMateri) {
-        await updateModuleProgress(supabase, userId, subMateri.module_id);
-      }
+    const completedCount = completedPoins?.length || 0;
+
+    console.log("DEBUG: Completed poins count:", completedCount);
+
+    // Note: We don't know total poins from database
+    // Progress percentage will be calculated when frontend explicitly calls
+    // the completeSubMateri endpoint after all poins are done
+
+    // Just update the last_accessed timestamp
+    const { error: updateError } = await supabase
+      .from("user_sub_materi_progress_simple")
+      .upsert(
+        {
+          user_id: userId,
+          module_id: parseInt(moduleId),
+          sub_materi_id: subMateriId,
+          is_completed: false, // Will be set to true by completeSubMateri
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "user_id,sub_materi_id",
+        }
+      );
+
+    if (updateError) {
+      console.error("DEBUG: Error updating sub-materi progress:", updateError);
+    } else {
+      console.log("DEBUG: Sub-materi progress updated successfully");
     }
   } catch (error) {
     console.error("Update sub materi progress error:", error);
   }
 }
 
-// Helper function untuk update progress module
+// Helper function untuk update progress module (SIMPLIFIED)
+// Frontend is responsible for calculating and sending progress percentage
+async function updateModuleProgressSimple(supabase, userId, moduleId) {
+  try {
+    console.log("DEBUG: Updating module progress (simple):", {
+      userId,
+      moduleId,
+    });
+
+    // Get all completed sub-materis for this module
+    const { data: completedSubMateris } = await supabase
+      .from("user_sub_materi_progress_simple")
+      .select("sub_materi_id, is_completed")
+      .eq("user_id", userId)
+      .eq("module_id", parseInt(moduleId))
+      .eq("is_completed", true);
+
+    const completedCount = completedSubMateris?.length || 0;
+
+    console.log("DEBUG: Completed sub-materis count:", completedCount);
+
+    // Note: We don't know total sub-materis from database
+    // Progress percentage should be calculated and sent by frontend
+    // For now, just update the last_accessed timestamp
+
+    const { error: updateError } = await supabase
+      .from("user_module_progress_simple")
+      .upsert(
+        {
+          user_id: userId,
+          module_id: parseInt(moduleId),
+          updated_at: new Date().toISOString(),
+          // Frontend will update progress_percentage and completed status
+          // when it knows all sub-materis are done
+        },
+        {
+          onConflict: "user_id,module_id",
+        }
+      );
+
+    if (updateError) {
+      console.error("DEBUG: Error updating module progress:", updateError);
+    } else {
+      console.log("DEBUG: Module progress updated successfully");
+    }
+  } catch (error) {
+    console.error("Update module progress error:", error);
+  }
+}
+
+// OLD Helper function (kept for reference, now deprecated)
 async function updateModuleProgress(supabase, userId, moduleId) {
   try {
     // Hitung total sub_materi dan yang sudah selesai
@@ -146,16 +232,33 @@ async function updateModuleProgress(supabase, userId, moduleId) {
     const allSubMaterisCompleted =
       totalSubMateris > 0 && completedCount === totalSubMateris;
 
+    // Get all sub-materi progress to calculate average
+    const { data: allProgress } = await supabase
+      .from("user_sub_materi_progress")
+      .select("progress_percentage")
+      .eq("user_id", userId)
+      .in("sub_materi_id", allSubMateris?.map((s) => s.id) || []);
+
+    // Calculate module progress as average of all sub-materi progress
+    let moduleProgressPercentage = 0;
+    if (allProgress && allProgress.length > 0) {
+      const totalProgress = allProgress.reduce(
+        (sum, p) => sum + (p.progress_percentage || 0),
+        0
+      );
+      moduleProgressPercentage = Math.round(totalProgress / totalSubMateris);
+    } else if (totalSubMateris > 0) {
+      // If no progress yet but user has accessed the module, show initial progress
+      moduleProgressPercentage = Math.round((1 / (totalSubMateris + 1)) * 100);
+    }
+
     // Update progress module
     await supabase.from("user_module_progress").upsert({
       user_id: userId,
       module_id: moduleId,
-      completed: allSubMaterisCompleted,
+      is_completed: allSubMaterisCompleted,
       completed_at: allSubMaterisCompleted ? new Date().toISOString() : null,
-      progress_percentage:
-        totalSubMateris > 0
-          ? Math.round((completedCount / totalSubMateris) * 100)
-          : 0,
+      progress_percentage: moduleProgressPercentage,
     });
   } catch (error) {
     console.error("Update module progress error:", error);
@@ -169,15 +272,24 @@ async function getModuleProgress(req, res) {
     const { module_id } = req.params;
     const userId = req.user.id;
 
+    // IMPORTANT: Frontend has static module/sub-materi/poin data
+    // Backend only returns progress tracking data
+
+    console.log("DEBUG: Fetching progress for module:", {
+      userId,
+      module_id,
+    });
+
     // Get module progress
     const { data: moduleProgress, error: moduleError } = await req.supabase
-      .from("user_module_progress")
+      .from("user_module_progress_simple")
       .select("*")
       .eq("user_id", userId)
-      .eq("module_id", module_id)
+      .eq("module_id", parseInt(module_id))
       .maybeSingle();
 
     if (moduleError) {
+      console.error("DEBUG: Module progress error:", moduleError);
       return failure(
         res,
         "MODULE_PROGRESS_ERROR",
@@ -189,70 +301,45 @@ async function getModuleProgress(req, res) {
       );
     }
 
-    // Get sub_materi progress
-    const { data: subMateris } = await req.supabase
-      .from("sub_materis")
-      .select("id, judul, order_index")
-      .eq("module_id", module_id)
-      .eq("published", true)
-      .order("order_index", { ascending: true });
+    // Get all sub-materi progress for this module
+    const { data: subMateriProgress, error: subMateriError } =
+      await req.supabase
+        .from("user_sub_materi_progress_simple")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("module_id", parseInt(module_id))
+        .order("created_at", { ascending: true });
 
-    const subMateriIds = subMateris?.map((s) => s.id) || [];
+    if (subMateriError) {
+      console.error("DEBUG: Sub-materi progress error:", subMateriError);
+    }
 
-    const { data: subMateriProgress } = await req.supabase
-      .from("user_sub_materi_progress")
+    // Get all poin progress for this module
+    const { data: poinProgress, error: poinError } = await req.supabase
+      .from("user_poin_progress_simple")
       .select("*")
       .eq("user_id", userId)
-      .in("sub_materi_id", subMateriIds);
+      .eq("module_id", parseInt(module_id))
+      .order("created_at", { ascending: true });
 
-    // Get poin progress untuk setiap sub_materi
-    const progressDetails = await Promise.all(
-      (subMateris || []).map(async (subMateri) => {
-        const { data: poinDetails } = await req.supabase
-          .from("poin_details")
-          .select("id, judul_poin, order_index")
-          .eq("sub_materi_id", subMateri.id)
-          .order("order_index", { ascending: true });
+    if (poinError) {
+      console.error("DEBUG: Poin progress error:", poinError);
+    }
 
-        const poinIds = poinDetails?.map((p) => p.id) || [];
-
-        const { data: poinProgress } = await req.supabase
-          .from("user_poin_progress")
-          .select("*")
-          .eq("user_id", userId)
-          .in("poin_id", poinIds);
-
-        const subMateriProgressData = subMateriProgress?.find(
-          (sp) => sp.sub_materi_id === subMateri.id
-        );
-
-        return {
-          sub_materi: subMateri,
-          progress: subMateriProgressData || {
-            completed: false,
-            progress_percentage: 0,
-          },
-          poin_details:
-            poinDetails?.map((poin) => ({
-              ...poin,
-              progress: poinProgress?.find((pp) => pp.poin_id === poin.id) || {
-                completed: false,
-              },
-            })) || [],
-        };
-      })
-    );
-
+    // Return raw progress data
+    // Frontend will match this with its static content
     return success(
       res,
       "MODULE_PROGRESS_SUCCESS",
       "Progress module berhasil diambil",
       {
         module_progress: moduleProgress || {
-          completed: false,
+          module_id: parseInt(module_id),
+          is_completed: false,
           progress_percentage: 0,
         },
-        sub_materi_progress: progressDetails,
+        sub_materi_progress: subMateriProgress || [],
+        poin_progress: poinProgress || [],
       }
     );
   } catch (error) {
@@ -269,50 +356,48 @@ async function getUserModulesProgress(req, res) {
   try {
     const userId = req.user.id;
 
-    // Get all published modules
-    console.log("DEBUG: Querying modules for user:", userId);
-    const { data: modules, error: modulesError } = await req.supabase
-      .from("modules")
-      .select("id, title, slug, description, category")
-      .eq("published", true)
-      .order("created_at", { ascending: true });
+    // IMPORTANT: Frontend has static module data (dummy data)
+    // Backend only tracks user progress, NOT module content
 
-    console.log("DEBUG: Modules query result:", {
-      modules: modules?.length,
-      error: modulesError?.message,
+    console.log("DEBUG: Fetching progress for user:", userId);
+
+    // Get all user's module progress records
+    // This table only contains progress tracking, not module content
+    const { data: moduleProgress, error: progressError } = await req.supabase
+      .from("user_module_progress_simple")
+      .select("*")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false });
+
+    console.log("DEBUG: Module progress query result:", {
+      records: moduleProgress?.length,
+      error: progressError?.message,
     });
 
-    if (modulesError) {
+    if (progressError) {
       return failure(
         res,
-        "MODULES_FETCH_ERROR",
-        "Gagal mengambil daftar modules",
+        "PROGRESS_FETCH_ERROR",
+        "Gagal mengambil progress modules",
         500,
         {
-          details: modulesError.message,
+          details: progressError.message,
         }
       );
     }
 
-    // Get user progress for all modules
-    const moduleIds = modules?.map((m) => m.id) || [];
-    const { data: moduleProgress } = await req.supabase
-      .from("user_module_progress")
-      .select("*")
-      .eq("user_id", userId)
-      .in("module_id", moduleIds);
-
-    // Combine modules with progress
-    const modulesWithProgress =
-      modules?.map((module) => {
-        const progress = moduleProgress?.find(
-          (mp) => mp.module_id === module.id
-        );
-        return {
-          ...module,
-          progress: progress || { completed: false, progress_percentage: 0 },
-        };
-      }) || [];
+    // Return only progress data
+    // Frontend will match this with its static module data by module_id
+    const progressData =
+      moduleProgress?.map((progress) => ({
+        id: progress.module_id, // Module ID untuk match dengan frontend
+        module_id: progress.module_id,
+        progress_percentage: progress.progress_percentage || 0,
+        completed: progress.is_completed || false,
+        updated_at: progress.updated_at,
+        created_at: progress.created_at,
+        completed_at: progress.completed_at,
+      })) || [];
 
     // Set no-cache headers for fresh progress data
     res.set({
@@ -326,7 +411,7 @@ async function getUserModulesProgress(req, res) {
       "USER_MODULES_PROGRESS_SUCCESS",
       "Progress modules berhasil diambil",
       {
-        modules: modulesWithProgress,
+        modules: progressData,
       }
     );
   } catch (error) {
@@ -477,6 +562,19 @@ const getSubMateriProgress = async (req, res) => {
         `[Progress API] Creating initial progress record for user ${userId}, sub_materi ${id}`
       );
 
+      // Get total poin untuk menghitung initial progress
+      const { data: allPoin } = await req.supabase
+        .from("poin_details")
+        .select("id")
+        .eq("sub_materi_id", id);
+
+      const totalPoin = allPoin?.length || 0;
+
+      // Set initial progress: jika ada poin, progress dimulai dari 1/totalPoin
+      // Ini memastikan progress tidak 0% saat user pertama kali membuka
+      const initialProgress =
+        totalPoin > 0 ? Math.round((1 / (totalPoin + 1)) * 100) : 5;
+
       const { data: newProgress, error: createError } = await req.supabase
         .from("user_sub_materi_progress")
         .insert({
@@ -485,7 +583,7 @@ const getSubMateriProgress = async (req, res) => {
           is_unlocked: true,
           is_completed: false,
           current_poin_index: 0,
-          progress_percent: 0,
+          progress_percent: initialProgress,
           last_accessed_at: new Date().toISOString(),
         })
         .select()
@@ -501,7 +599,7 @@ const getSubMateriProgress = async (req, res) => {
           is_unlocked: true,
           is_completed: false,
           current_poin_index: 0,
-          progress_percent: 0,
+          progress_percent: initialProgress,
           last_accessed_at: new Date().toISOString(),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -561,65 +659,49 @@ const completeSubMateri = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
-    // Check if sub_materi exists
-    const { data: subMateri, error: subMateriError } = await req.supabase
-      .from("sub_materis")
-      .select("id, title, module_id")
-      .eq("id", id)
-      .eq("published", true)
-      .single();
+    // IMPORTANT: Frontend has static sub-materi data (dummy data)
+    // Backend only tracks completion, does NOT validate sub-materi existence
+    // Frontend is responsible for calling this after all poins completed
 
-    if (subMateriError || !subMateri) {
+    console.log("DEBUG: Completing sub-materi:", {
+      userId,
+      sub_materi_id: id,
+    });
+
+    // Frontend sends module_id in body (required for grouping)
+    const { module_id } = req.body;
+
+    if (!module_id) {
       return failure(
         res,
-        "SUB_MATERI_NOT_FOUND",
-        "Sub materi tidak ditemukan atau belum dipublikasi",
-        404
-      );
-    }
-
-    // Check if all poin are completed
-    const { data: allPoin } = await req.supabase
-      .from("poin_details")
-      .select("id")
-      .eq("sub_materi_id", id);
-
-    const { data: completedPoin } = await req.supabase
-      .from("user_poin_progress")
-      .select("poin_id")
-      .eq("user_id", userId)
-      .eq("is_completed", true)
-      .in("poin_id", allPoin?.map((p) => p.id) || []);
-
-    const totalPoin = allPoin?.length || 0;
-    const completedCount = completedPoin?.length || 0;
-
-    if (totalPoin > 0 && completedCount < totalPoin) {
-      return failure(
-        res,
-        "INCOMPLETE_POIN",
-        `Selesaikan semua poin terlebih dahulu. Progress: ${completedCount}/${totalPoin}`,
+        "MISSING_MODULE_ID",
+        "module_id is required in request body",
         400
       );
     }
 
     // Mark sub_materi as completed
     const { data: progress, error: progressError } = await req.supabase
-      .from("user_sub_materi_progress")
-      .upsert({
-        user_id: userId,
-        sub_materi_id: id,
-        is_completed: true,
-        completed_at: new Date().toISOString(),
-        progress_percentage: 100,
-        is_unlocked: true,
-        current_poin_index: totalPoin,
-        last_accessed_at: new Date().toISOString(),
-      })
+      .from("user_sub_materi_progress_simple")
+      .upsert(
+        {
+          user_id: userId,
+          module_id: parseInt(module_id),
+          sub_materi_id: id,
+          is_completed: true,
+          completed_at: new Date().toISOString(),
+          progress_percentage: 100,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "user_id,sub_materi_id", // Specify unique constraint columns
+        }
+      )
       .select()
       .single();
 
     if (progressError) {
+      console.error("DEBUG: Error completing sub-materi:", progressError);
       return failure(
         res,
         "PROGRESS_UPDATE_ERROR",
@@ -629,8 +711,10 @@ const completeSubMateri = async (req, res) => {
       );
     }
 
+    console.log("DEBUG: Sub-materi completed successfully:", progress);
+
     // Update module progress
-    await updateModuleProgress(req.supabase, userId, subMateri.module_id);
+    await updateModuleProgressSimple(req.supabase, userId, module_id);
 
     return success(
       res,
