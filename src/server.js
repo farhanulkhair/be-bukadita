@@ -24,12 +24,15 @@ const server = app.listen(PORT, () => {
   console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/health`);
   console.log("📋 Available v1 endpoints:");
-  console.log("   Auth:       /api/v1/auth/*");
-  console.log("   Materials:  /api/v1/materials/*");
-  console.log("   Modules:    /api/v1/modules/*");
-  console.log("   Quizzes:    /api/v1/quizzes/*");
-  console.log("   Users:      /api/v1/users/me");
-  console.log("   Admin:      /api/v1/admin/*");
+  console.log("   Auth:         /api/v1/auth/*");
+  console.log("   Materials:    /api/v1/materials/*");
+  console.log("   Modules:      /api/v1/modules/*");
+  console.log("   Quizzes:      /api/v1/quizzes/* (admin redirects)");
+  console.log("   Kuis:         /api/v1/kuis/* (user quiz access)");
+  console.log("   User Quizzes: /api/v1/user-quizzes/* (quiz attempts)");
+  console.log("   Users:        /api/v1/users/me");
+  console.log("   Notes:        /api/v1/notes/*");
+  console.log("   Admin:        /api/v1/admin/*");
   console.log("");
 
   // Bootstrap: ensure superadmin exists (optional, controlled via env)

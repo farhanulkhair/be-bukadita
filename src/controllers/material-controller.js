@@ -588,6 +588,257 @@ const deleteMaterial = async (req, res) => {
   }
 };
 
+// GET /api/v1/materials/:id/points - Mendapatkan semua poin dari suatu material
+const getMaterialPoints = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.user;
+    const isAdmin =
+      req.profile && ["admin", "superadmin"].includes(req.profile.role);
+
+    // Use admin client for admin users to bypass RLS restrictions
+    const sb = isAdmin ? req.supabaseAdmin || req.supabase : req.supabase;
+
+    // Verify sub_materi exists and check access
+    const { data: material, error: materialError } = await sb
+      .from("sub_materis")
+      .select("id, title, published")
+      .eq("id", id)
+      .single();
+
+    if (materialError || !material) {
+      return failure(
+        res,
+        "MATERIAL_NOT_FOUND",
+        "Material tidak ditemukan",
+        404
+      );
+    }
+
+    // Check access for non-admin users
+    if (!material.published && !isAdmin) {
+      return failure(
+        res,
+        "MATERIAL_NOT_PUBLISHED",
+        "Material belum dipublikasi",
+        403
+      );
+    }
+
+    // Get all poin details for this material
+    const { data: points, error: pointsError } = await sb
+      .from("poin_details")
+      .select(
+        `
+        id,
+        title,
+        content_html,
+        duration_label,
+        duration_minutes,
+        order_index,
+        created_at,
+        updated_at
+      `
+      )
+      .eq("sub_materi_id", id)
+      .order("order_index", { ascending: true });
+
+    if (pointsError) {
+      console.error("Get points error:", pointsError);
+      return failure(
+        res,
+        "POINTS_FETCH_ERROR",
+        "Gagal mengambil daftar poin",
+        500,
+        { details: pointsError.message }
+      );
+    }
+
+    // If user is logged in and not admin, add progress information
+    let enrichedPoints = points || [];
+    if (user && !isAdmin && enrichedPoints.length > 0) {
+      const pointIds = enrichedPoints.map((p) => p.id);
+
+      const { data: progressData } = await sb
+        .from("user_poin_progress")
+        .select("poin_id, is_completed, completed_at")
+        .eq("user_id", user.id)
+        .in("poin_id", pointIds);
+
+      const progressMap = {};
+      progressData?.forEach((progress) => {
+        progressMap[progress.poin_id] = {
+          is_completed: progress.is_completed,
+          completed_at: progress.completed_at,
+        };
+      });
+
+      enrichedPoints = enrichedPoints.map((point) => ({
+        ...point,
+        user_progress: progressMap[point.id] || {
+          is_completed: false,
+          completed_at: null,
+        },
+      }));
+    }
+
+    // Format points to include sub_materi_id as required
+    const formattedPoints = enrichedPoints.map((point) => ({
+      id: point.id,
+      sub_materi_id: id,
+      title: point.title,
+      content_html: point.content_html,
+      duration_label: point.duration_label,
+      duration_minutes: point.duration_minutes,
+      order_index: point.order_index,
+      created_at: point.created_at,
+      updated_at: point.updated_at,
+      ...(point.user_progress && { user_progress: point.user_progress }),
+    }));
+
+    return success(
+      res,
+      "MATERIAL_POINTS_SUCCESS",
+      "Daftar poin material berhasil diambil",
+      formattedPoints
+    );
+  } catch (error) {
+    console.error("Material points controller error:", error);
+    return failure(res, "INTERNAL_ERROR", "Internal server error", 500, {
+      details: error.message,
+    });
+  }
+};
+
+// GET /api/v1/materials/:id/quizzes - Mendapatkan quiz dari suatu material
+const getMaterialQuizzes = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.user;
+    const isAdmin =
+      req.profile && ["admin", "superadmin"].includes(req.profile.role);
+
+    // Use admin client for admin users to bypass RLS restrictions
+    const sb = isAdmin ? req.supabaseAdmin || req.supabase : req.supabase;
+
+    // Verify sub_materi exists and check access
+    const { data: material, error: materialError } = await sb
+      .from("sub_materis")
+      .select("id, title, published")
+      .eq("id", id)
+      .single();
+
+    if (materialError || !material) {
+      return failure(
+        res,
+        "MATERIAL_NOT_FOUND",
+        "Material tidak ditemukan",
+        404
+      );
+    }
+
+    // Check access for non-admin users
+    if (!material.published && !isAdmin) {
+      return failure(
+        res,
+        "MATERIAL_NOT_PUBLISHED",
+        "Material belum dipublikasi",
+        403
+      );
+    }
+
+    // Get published quizzes for this material
+    let quizQuery = sb
+      .from("materis_quizzes")
+      .select(
+        `
+        id,
+        title,
+        description,
+        time_limit_seconds,
+        passing_score,
+        quiz_type,
+        created_at,
+        updated_at
+      `
+      )
+      .eq("sub_materi_id", id)
+      .order("created_at", { ascending: true });
+
+    // Non-admin users can only see published quizzes
+    if (!isAdmin) {
+      quizQuery = quizQuery.eq("published", true);
+    }
+
+    const { data: quizzes, error: quizzesError } = await quizQuery;
+
+    if (quizzesError) {
+      console.error("Get quizzes error:", quizzesError);
+      return failure(
+        res,
+        "QUIZZES_FETCH_ERROR",
+        "Gagal mengambil daftar quiz",
+        500,
+        { details: quizzesError.message }
+      );
+    }
+
+    // If user is logged in and not admin, add attempt information
+    let enrichedQuizzes = quizzes || [];
+    if (user && !isAdmin && enrichedQuizzes.length > 0) {
+      const quizIds = enrichedQuizzes.map((q) => q.id);
+
+      const { data: attempts } = await sb
+        .from("user_quiz_attempts")
+        .select("quiz_id, score, is_passed, completed_at, started_at")
+        .eq("user_id", user.id)
+        .in("quiz_id", quizIds)
+        .order("created_at", { ascending: false });
+
+      // Group attempts by quiz_id and get latest attempt
+      const attemptsMap = {};
+      attempts?.forEach((attempt) => {
+        if (!attemptsMap[attempt.quiz_id]) {
+          attemptsMap[attempt.quiz_id] = attempt;
+        }
+      });
+
+      enrichedQuizzes = enrichedQuizzes.map((quiz) => ({
+        ...quiz,
+        user_attempt: attemptsMap[quiz.id] || null,
+      }));
+    }
+
+    // Format quizzes to match requirements
+    const formattedQuizzes = enrichedQuizzes.map((quiz) => ({
+      id: quiz.id,
+      module_id: material.module_id || null,
+      sub_materi_id: id,
+      quiz_type: quiz.quiz_type,
+      title: quiz.title,
+      description: quiz.description,
+      time_limit_seconds: quiz.time_limit_seconds,
+      passing_score: quiz.passing_score,
+      published: quiz.published,
+      created_at: quiz.created_at,
+      updated_at: quiz.updated_at,
+      ...(quiz.user_attempt && { user_attempt: quiz.user_attempt }),
+    }));
+
+    return success(
+      res,
+      "MATERIAL_QUIZZES_SUCCESS",
+      "Daftar quiz material berhasil diambil",
+      formattedQuizzes
+    );
+  } catch (error) {
+    console.error("Material quizzes controller error:", error);
+    return failure(res, "INTERNAL_ERROR", "Internal server error", 500, {
+      details: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllMaterials,
   getMaterialById,
@@ -595,4 +846,6 @@ module.exports = {
   updateMaterial,
   deleteMaterial,
   getPublicMaterials,
+  getMaterialPoints,
+  getMaterialQuizzes,
 };

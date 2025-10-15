@@ -30,6 +30,14 @@ router.post("/:subMateriId/poins", authMiddleware, requireAdmin, createPoin); //
 const { getQuizForSubMateri } = require("../../controllers/quiz-controller");
 router.get("/:subMateriId/quiz", getQuizForSubMateri); // Get quiz for sub_materi (published only for users)
 
+// Additional routes for material points and quizzes (REST API style)
+const {
+  getMaterialPoints,
+  getMaterialQuizzes,
+} = require("../../controllers/material-controller");
+router.get("/:id/points", getMaterialPoints); // Get points for a material
+router.get("/:id/quizzes", getMaterialQuizzes); // Get quizzes for a material
+
 // Admin protected CRUD
 router.post("/", authMiddleware, requireAdmin, createMaterial);
 router.put("/:id", authMiddleware, requireAdmin, updateMaterial);
