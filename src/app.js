@@ -36,7 +36,10 @@ app.use(
       if (!origin) return callback(null, true);
 
       // In development, allow all localhost origins
-      if (process.env.NODE_ENV !== "production" && origin.includes("localhost")) {
+      if (
+        process.env.NODE_ENV !== "production" &&
+        origin.includes("localhost")
+      ) {
         return callback(null, true);
       }
 
