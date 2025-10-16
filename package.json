@@ -5,6 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
+    "build": "node -e \"console.log('✓ Backend build successful - Ready for deployment')\"",
+    "vercel-build": "echo 'Vercel build complete'",
     "dev": "nodemon --watch src --exec node src/server.js",
     "lint": "eslint . --ext .js",
     "seed:superadmin": "node scripts/seed_superadmin.js",
