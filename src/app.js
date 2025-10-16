@@ -73,6 +73,27 @@ app.get("/health", (req, res) => {
   });
 });
 
+// Root endpoint - Welcome message
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Welcome to Bukadita Backend API",
+    version: "1.0.0",
+    endpoints: {
+      health: "/health",
+      api: "/api/v1",
+      auth: "/api/v1/auth",
+      modules: "/api/v1/modules",
+      materials: "/api/v1/materials",
+      quizzes: "/api/v1/quizzes",
+      notes: "/api/v1/notes",
+      users: "/api/v1/users/me",
+    },
+    documentation: "/api-docs",
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Mount aggregated v1 API surface
 app.use("/api/v1", v1Index);
 
