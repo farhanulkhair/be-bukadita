@@ -35,6 +35,8 @@ async function getMyProfile(req, res) {
     }
     // Use per-request authenticated client if present (RLS owner access)
     const client = req.supabase; // anon or user client supplied via middleware/auth
+    const adminClient = req.supabaseAdmin;
+
     const { data: profile, error } = await client
       .from("profiles")
       .select(
@@ -60,6 +62,65 @@ async function getMyProfile(req, res) {
         404
       );
     }
+
+    // Convert old public URLs to signed URLs automatically
+    if (
+      profile.profil_url &&
+      profile.profil_url.includes("/object/public/foto_profil/")
+    ) {
+      try {
+        console.log("🔄 Converting old public URL to signed URL...");
+
+        // Extract file path from public URL
+        const urlObj = new URL(profile.profil_url);
+        const pathParts = urlObj.pathname.split("/");
+        const bucketIndex = pathParts.findIndex(
+          (part) => part === "foto_profil"
+        );
+
+        if (bucketIndex !== -1 && pathParts.length > bucketIndex + 1) {
+          const filePath = pathParts.slice(bucketIndex + 1).join("/");
+
+          // Generate signed URL (valid for 1 year)
+          const { data: signedUrlData, error: signedUrlError } =
+            await adminClient.storage
+              .from("foto_profil")
+              .createSignedUrl(filePath, 365 * 24 * 60 * 60);
+
+          if (!signedUrlError && signedUrlData?.signedUrl) {
+            console.log("✅ Signed URL generated, updating profile...");
+
+            // Update profile with signed URL using adminClient to bypass RLS
+            const { data: updatedProfile, error: updateError } =
+              await adminClient
+                .from("profiles")
+                .update({ profil_url: signedUrlData.signedUrl })
+                .eq("id", userId)
+                .select(
+                  "id, full_name, phone, email, address, profil_url, date_of_birth, role, created_at, updated_at"
+                )
+                .maybeSingle();
+
+            if (!updateError && updatedProfile) {
+              console.log("✅ Profile updated with signed URL");
+              profile.profil_url = updatedProfile.profil_url;
+            } else if (updateError) {
+              console.error(
+                "⚠️ Failed to update profile with signed URL:",
+                updateError.message
+              );
+            }
+          }
+        }
+      } catch (conversionError) {
+        console.error(
+          "⚠️ Failed to convert public URL to signed URL:",
+          conversionError.message
+        );
+        // Don't fail the request, just log and continue with public URL
+      }
+    }
+
     return success(
       res,
       "USER_PROFILE_FETCH_SUCCESS",
@@ -297,30 +358,57 @@ async function uploadProfilePhoto(req, res) {
       return failure(res, "UPLOAD_ERROR", uploadError.message, 500);
     }
 
-    // Get public URL for the uploaded file
-    const { data: urlData } = adminClient.storage
-      .from("foto_profil")
-      .getPublicUrl(filePath);
+    // Get signed URL for the uploaded file (valid for 1 year)
+    // Signed URLs work regardless of bucket privacy settings
+    const { data: signedUrlData, error: signedUrlError } =
+      await adminClient.storage
+        .from("foto_profil")
+        .createSignedUrl(filePath, 365 * 24 * 60 * 60); // 1 year expiry
 
-    const publicUrl = urlData.publicUrl;
+    if (signedUrlError || !signedUrlData) {
+      console.error("Signed URL error:", signedUrlError);
+      // Cleanup uploaded file if URL generation fails
+      await adminClient.storage.from("foto_profil").remove([filePath]);
+      return failure(
+        res,
+        "SIGNED_URL_ERROR",
+        signedUrlError?.message || "Failed to generate signed URL",
+        500
+      );
+    }
 
-    // Update user profile with new photo URL
-    const { data: updatedProfile, error: updateError } = await client
+    const photoUrl = signedUrlData.signedUrl;
+
+    console.log(
+      "📸 Photo upload successful, updating profile with URL:",
+      photoUrl
+    );
+
+    // Update user profile with new photo URL using adminClient to bypass RLS
+    const { data: updatedProfile, error: updateError } = await adminClient
       .from("profiles")
       .update({
-        profil_url: publicUrl,
+        profil_url: photoUrl,
         updated_at: new Date().toISOString(),
       })
       .eq("id", userId)
       .select(
         "id, full_name, phone, email, address, profil_url, date_of_birth, role, created_at, updated_at"
       )
-      .single();
+      .maybeSingle(); // Use maybeSingle instead of single to avoid error if no rows
 
     if (updateError) {
+      console.error("❌ Profile update error:", updateError);
       // If profile update fails, try to delete the uploaded file
       await adminClient.storage.from("foto_profil").remove([filePath]);
       return failure(res, "PROFILE_UPDATE_ERROR", updateError.message, 500);
+    }
+
+    if (!updatedProfile) {
+      console.error("❌ Profile not found for user:", userId);
+      // If profile doesn't exist, try to delete the uploaded file
+      await adminClient.storage.from("foto_profil").remove([filePath]);
+      return failure(res, "PROFILE_NOT_FOUND", "Profile tidak ditemukan", 404);
     }
 
     return success(
@@ -329,7 +417,7 @@ async function uploadProfilePhoto(req, res) {
       "Foto profil berhasil diupload",
       {
         profile: updatedProfile,
-        photo_url: publicUrl,
+        photo_url: photoUrl,
         filename: filename,
       }
     );
@@ -429,10 +517,96 @@ async function deleteProfilePhoto(req, res) {
   }
 }
 
+// POST /api/v1/users/me/change-password - Change user password
+async function changePassword(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return failure(res, "USER_UNAUTHORIZED", "Unauthorized", 401);
+    }
+
+    const { currentPassword, newPassword } = req.body;
+
+    // Validation
+    if (!currentPassword || !newPassword) {
+      return failure(
+        res,
+        "VALIDATION_ERROR",
+        "Current password and new password are required",
+        400
+      );
+    }
+
+    if (newPassword.length < 6) {
+      return failure(
+        res,
+        "VALIDATION_ERROR",
+        "New password must be at least 6 characters",
+        400
+      );
+    }
+
+    // Use authenticated client to update password
+    const userClient = req.authenticatedClient;
+    if (!userClient) {
+      return failure(
+        res,
+        "USER_CLIENT_MISSING",
+        "Authenticated client missing",
+        500
+      );
+    }
+
+    // Verify current password by attempting to sign in
+    const { data: signInData, error: signInError } =
+      await userClient.auth.signInWithPassword({
+        email: req.user.email,
+        password: currentPassword,
+      });
+
+    if (signInError) {
+      return failure(
+        res,
+        "INVALID_CURRENT_PASSWORD",
+        "Password saat ini salah",
+        400
+      );
+    }
+
+    // Update password
+    const { error: updateError } = await userClient.auth.updateUser({
+      password: newPassword,
+    });
+
+    if (updateError) {
+      console.error("Password update error:", updateError);
+      return failure(
+        res,
+        "PASSWORD_UPDATE_ERROR",
+        updateError.message || "Gagal mengubah password",
+        500
+      );
+    }
+
+    return success(
+      res,
+      "PASSWORD_CHANGE_SUCCESS",
+      "Password berhasil diubah",
+      null
+    );
+  } catch (error) {
+    console.error("changePassword error:", error);
+    return failure(res, "INTERNAL_ERROR", "Internal server error", 500, {
+      details: error.message,
+    });
+  }
+}
+
 module.exports = {
   getMyProfile,
   updateMyProfile,
   uploadProfilePhoto,
   deleteProfilePhoto,
+  changePassword,
   upload, // Export multer instance for use in routes
 };

@@ -211,7 +211,9 @@ const submitQuizAnswers = async (req, res) => {
     // Get quiz details and questions
     const { data: quiz, error: quizError } = await client
       .from("materis_quizzes")
-      .select("id, title, passing_score, time_limit_seconds")
+      .select(
+        "id, title, passing_score, time_limit_seconds, sub_materi_id, module_id"
+      )
       .eq("id", quizId)
       .single();
 
@@ -293,6 +295,59 @@ const submitQuizAnswers = async (req, res) => {
           details: updateError.message,
         }
       );
+    }
+
+    // Update sub-materi progress after quiz completion
+    // Only mark as completed if quiz is passed (score >= passing_score)
+    if (quiz.sub_materi_id) {
+      console.log("DEBUG: Updating sub-materi progress after quiz:", {
+        userId,
+        sub_materi_id: quiz.sub_materi_id,
+        module_id: quiz.module_id,
+        score: scorePercentage,
+        isPassed,
+      });
+
+      try {
+        const { data: subMateriProgress, error: progressError } = await client
+          .from("user_sub_materi_progress_simple")
+          .upsert(
+            {
+              user_id: userId,
+              module_id: quiz.module_id,
+              sub_materi_id: quiz.sub_materi_id,
+              is_completed: isPassed, // Only complete if passed
+              progress_percentage: isPassed ? 100 : scorePercentage, // 100 if passed, otherwise show quiz score
+              completed_at: isPassed ? new Date().toISOString() : null,
+              updated_at: new Date().toISOString(),
+            },
+            {
+              onConflict: "user_id,sub_materi_id",
+              ignoreDuplicates: false,
+            }
+          )
+          .select()
+          .single();
+
+        if (progressError) {
+          console.error(
+            "DEBUG: Error updating sub-materi progress:",
+            progressError
+          );
+          // Don't fail the whole request, just log the error
+        } else {
+          console.log(
+            "DEBUG: Sub-materi progress updated after quiz:",
+            subMateriProgress
+          );
+        }
+      } catch (progressUpdateError) {
+        console.error(
+          "DEBUG: Exception updating sub-materi progress:",
+          progressUpdateError
+        );
+        // Continue with quiz submission response
+      }
     }
 
     return success(res, "QUIZ_SUBMITTED", "Quiz berhasil diselesaikan", {

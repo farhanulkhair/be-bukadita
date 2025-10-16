@@ -11,6 +11,7 @@ const notesRouter = require("../notes-routes");
 const userQuizzesRouter = require("./user-quizzes");
 const progressRouter = require("./progress");
 const kuisRouter = require("./kuis");
+const simpleQuizzesRouter = require("./simple-quizzes");
 
 const router = express.Router();
 
@@ -34,6 +35,7 @@ router.use("/notes", notesRouter);
 router.use("/user-quizzes", userQuizzesRouter);
 router.use("/progress", progressRouter);
 router.use("/kuis", kuisRouter);
+router.use("/simple-quizzes", simpleQuizzesRouter);
 
 // Direct poin details routes (for admin management)
 router.get("/poins/:id", getPoinById); // Get specific poin (with access control)
