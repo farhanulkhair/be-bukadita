@@ -1,9 +1,12 @@
 # .gitignore
 
-# Environment variables
+# Environment variables - NEVER COMMIT THESE!
 .env
 .env.local
 .env.production
+.env.development
+.env.test
+.env.*.local
 
 # Node modules
 node_modules/

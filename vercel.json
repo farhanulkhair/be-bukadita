@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "name": "bukadita-api",
+  "builds": [
+    {
+      "src": "src/server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/health",
+      "dest": "src/server.js"
+    },
+    {
+      "src": "/api/v1/(.*)",
+      "dest": "src/server.js"
+    },
+    {
+      "src": "/api/pengguna/(.*)",
+      "dest": "src/server.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "src/server.js"
+    }
+  ],
+  "env": {
+    "NODE_ENV": "production"
+  },
+  "regions": ["sin1"]
+}
