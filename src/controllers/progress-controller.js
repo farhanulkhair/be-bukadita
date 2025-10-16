@@ -1,5 +1,112 @@
 const { success, failure } = require("../utils/respond");
 
+// ============================================================================
+// Helper Function: Recalculate Module Progress
+// ============================================================================
+async function recalculateModuleProgress(supabase, userId, moduleId) {
+  try {
+    console.log("📊 [Helper] Recalculating module progress:", {
+      userId,
+      moduleId,
+    });
+
+    // Get all sub-materi progress for this module
+    const { data: allSubMateriProgress, error: fetchError } = await supabase
+      .from("user_sub_materi_progress_simple")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("module_id", moduleId);
+
+    if (fetchError) {
+      console.error("Error fetching sub-materi progress:", fetchError);
+      return { success: false, error: fetchError };
+    }
+
+    if (!allSubMateriProgress || allSubMateriProgress.length === 0) {
+      console.log("No sub-materi progress found, setting module to 0%");
+
+      // Create initial module progress record
+      const { error: initError } = await supabase
+        .from("user_module_progress_simple")
+        .upsert(
+          {
+            user_id: userId,
+            module_id: moduleId,
+            progress_percentage: 0,
+            is_completed: false,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id,module_id" }
+        );
+
+      if (initError) {
+        console.error("Error initializing module progress:", initError);
+        return { success: false, error: initError };
+      }
+
+      return { success: true, progress: 0, completed: false };
+    }
+
+    // Calculate average progress
+    const totalProgress = allSubMateriProgress.reduce(
+      (sum, sub) => sum + (sub.progress_percentage || 0),
+      0
+    );
+    const averageProgress = totalProgress / allSubMateriProgress.length;
+
+    // Check if all sub-materis are completed
+    const allCompleted = allSubMateriProgress.every(
+      (sub) => sub.is_completed === true
+    );
+
+    const moduleProgressPercentage = Math.round(averageProgress * 100) / 100;
+
+    console.log("📈 [Helper] Module progress calculated:", {
+      totalSubMateris: allSubMateriProgress.length,
+      completedCount: allSubMateriProgress.filter((s) => s.is_completed).length,
+      averageProgress: moduleProgressPercentage,
+      allCompleted,
+    });
+
+    // Update module progress
+    const { data: moduleProgressData, error: updateError } = await supabase
+      .from("user_module_progress_simple")
+      .upsert(
+        {
+          user_id: userId,
+          module_id: moduleId,
+          progress_percentage: moduleProgressPercentage,
+          is_completed: allCompleted,
+          completed_at: allCompleted ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id,module_id" }
+      )
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error("Error updating module progress:", updateError);
+      return { success: false, error: updateError };
+    }
+
+    console.log("✅ [Helper] Module progress updated:", {
+      progress: moduleProgressPercentage,
+      completed: allCompleted,
+    });
+
+    return {
+      success: true,
+      progress: moduleProgressPercentage,
+      completed: allCompleted,
+      data: moduleProgressData,
+    };
+  } catch (error) {
+    console.error("Exception in recalculateModuleProgress:", error);
+    return { success: false, error };
+  }
+}
+
 // Menandai poin sebagai selesai
 // POST /api/v1/progress/materials/:materi_id/poins/:poin_id/complete
 // Body: { module_id: number } - required for grouping
@@ -87,6 +194,9 @@ async function completePoin(req, res) {
 
     // Update progress sub_materi after completing poin
     await updateSubMateriProgress(req.supabase, userId, materi_id, module_id);
+
+    // 🔥 CRITICAL: Recalculate module progress after poin completion
+    await recalculateModuleProgress(req.supabase, userId, parseInt(module_id));
 
     return success(
       res,
@@ -361,8 +471,7 @@ async function getUserModulesProgress(req, res) {
 
     console.log("DEBUG: Fetching progress for user:", userId);
 
-    // Get all user's module progress records
-    // This table only contains progress tracking, not module content
+    // 🔥 FIX: Get all user's module progress records first
     const { data: moduleProgress, error: progressError } = await req.supabase
       .from("user_module_progress_simple")
       .select("*")
@@ -386,7 +495,64 @@ async function getUserModulesProgress(req, res) {
       );
     }
 
-    // Return only progress data
+    // 🔥 NEW: Recalculate progress for each module to ensure accuracy
+    if (moduleProgress && moduleProgress.length > 0) {
+      console.log(
+        `[getUserModulesProgress] Recalculating progress for ${moduleProgress.length} modules...`
+      );
+
+      for (const module of moduleProgress) {
+        await recalculateModuleProgress(req.supabase, userId, module.module_id);
+      }
+
+      // 🔥 Fetch updated progress after recalculation
+      const { data: updatedProgress, error: refetchError } = await req.supabase
+        .from("user_module_progress_simple")
+        .select("*")
+        .eq("user_id", userId)
+        .order("updated_at", { ascending: false });
+
+      if (refetchError) {
+        console.error(
+          "[getUserModulesProgress] Error refetching after recalculate:",
+          refetchError
+        );
+        // Continue with old data instead of failing
+      } else {
+        console.log(
+          "[getUserModulesProgress] Successfully recalculated all module progress"
+        );
+        // Use updated progress data
+        const progressData =
+          updatedProgress?.map((progress) => ({
+            id: progress.module_id, // Module ID untuk match dengan frontend
+            module_id: progress.module_id,
+            progress_percentage: progress.progress_percentage || 0,
+            completed: progress.is_completed || false,
+            updated_at: progress.updated_at,
+            created_at: progress.created_at,
+            completed_at: progress.completed_at,
+          })) || [];
+
+        // Set no-cache headers for fresh progress data
+        res.set({
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
+          Expires: "0",
+        });
+
+        return success(
+          res,
+          "USER_MODULES_PROGRESS_SUCCESS",
+          "Progress modules berhasil diambil",
+          {
+            modules: progressData,
+          }
+        );
+      }
+    }
+
+    // Return only progress data (fallback if no recalculation)
     // Frontend will match this with its static module data by module_id
     const progressData =
       moduleProgress?.map((progress) => ({
@@ -713,8 +879,8 @@ const completeSubMateri = async (req, res) => {
 
     console.log("DEBUG: Sub-materi completed successfully:", progress);
 
-    // Update module progress
-    await updateModuleProgressSimple(req.supabase, userId, module_id);
+    // 🔥 CRITICAL: Recalculate module progress after sub-materi completion
+    await recalculateModuleProgress(req.supabase, userId, parseInt(module_id));
 
     return success(
       res,

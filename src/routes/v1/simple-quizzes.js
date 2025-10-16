@@ -7,6 +7,110 @@ const router = express.Router();
 // Apply auth middleware to all routes
 router.use(authMiddleware);
 
+// ============================================================================
+// Helper Function: Recalculate Module Progress
+// ============================================================================
+async function recalculateModuleProgress(client, userId, moduleId) {
+  try {
+    console.log("📊 Recalculating module progress:", { userId, moduleId });
+
+    // Get all sub-materi progress for this module
+    const { data: allSubMateriProgress, error: fetchError } = await client
+      .from("user_sub_materi_progress_simple")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("module_id", moduleId);
+
+    if (fetchError) {
+      console.error("Error fetching sub-materi progress:", fetchError);
+      return { success: false, error: fetchError };
+    }
+
+    if (!allSubMateriProgress || allSubMateriProgress.length === 0) {
+      console.log("No sub-materi progress found, setting module to 0%");
+
+      // Create initial module progress record
+      const { error: initError } = await client
+        .from("user_module_progress_simple")
+        .upsert(
+          {
+            user_id: userId,
+            module_id: moduleId,
+            progress_percentage: 0,
+            is_completed: false,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id,module_id" }
+        );
+
+      if (initError) {
+        console.error("Error initializing module progress:", initError);
+        return { success: false, error: initError };
+      }
+
+      return { success: true, progress: 0, completed: false };
+    }
+
+    // Calculate average progress
+    const totalProgress = allSubMateriProgress.reduce(
+      (sum, sub) => sum + (sub.progress_percentage || 0),
+      0
+    );
+    const averageProgress = totalProgress / allSubMateriProgress.length;
+
+    // Check if all sub-materis are completed
+    const allCompleted = allSubMateriProgress.every(
+      (sub) => sub.is_completed === true
+    );
+
+    const moduleProgressPercentage = Math.round(averageProgress * 100) / 100;
+
+    console.log("📈 Module progress calculated:", {
+      totalSubMateris: allSubMateriProgress.length,
+      completedCount: allSubMateriProgress.filter((s) => s.is_completed).length,
+      averageProgress: moduleProgressPercentage,
+      allCompleted,
+    });
+
+    // Update module progress
+    const { data: moduleProgressData, error: updateError } = await client
+      .from("user_module_progress_simple")
+      .upsert(
+        {
+          user_id: userId,
+          module_id: moduleId,
+          progress_percentage: moduleProgressPercentage,
+          is_completed: allCompleted,
+          completed_at: allCompleted ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id,module_id" }
+      )
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error("Error updating module progress:", updateError);
+      return { success: false, error: updateError };
+    }
+
+    console.log("✅ Module progress updated:", {
+      progress: moduleProgressPercentage,
+      completed: allCompleted,
+    });
+
+    return {
+      success: true,
+      progress: moduleProgressPercentage,
+      completed: allCompleted,
+      data: moduleProgressData,
+    };
+  } catch (error) {
+    console.error("Exception in recalculateModuleProgress:", error);
+    return { success: false, error };
+  }
+}
+
 // POST /api/v1/simple-quizzes/submit - Submit quiz (simple system)
 const submitSimpleQuiz = async (req, res) => {
   try {
@@ -128,7 +232,7 @@ const submitSimpleQuiz = async (req, res) => {
       isPassed,
     });
 
-    // Update sub-materi progress
+    // 🔥 FIX: Update sub-materi progress - Mark as completed when quiz is passed
     console.log("DEBUG: Updating sub-materi progress after quiz:", {
       userId,
       module_id,
@@ -137,6 +241,7 @@ const submitSimpleQuiz = async (req, res) => {
       isPassed,
     });
 
+    let currentSubMateriProgress = null;
     try {
       const { data: progressData, error: progressError } = await client
         .from("user_sub_materi_progress_simple")
@@ -145,7 +250,7 @@ const submitSimpleQuiz = async (req, res) => {
             user_id: userId,
             module_id,
             sub_materi_id,
-            is_completed: isPassed,
+            is_completed: isPassed, // 🔥 FIX: Mark as completed when passed
             progress_percentage: isPassed ? 100 : score,
             completed_at: isPassed ? new Date().toISOString() : null,
             updated_at: new Date().toISOString(),
@@ -165,6 +270,7 @@ const submitSimpleQuiz = async (req, res) => {
         );
       } else {
         console.log("DEBUG: Sub-materi progress updated:", progressData);
+        currentSubMateriProgress = progressData;
       }
     } catch (progressUpdateError) {
       console.error(
@@ -173,6 +279,20 @@ const submitSimpleQuiz = async (req, res) => {
       );
     }
 
+    // 🔥 CRITICAL: Recalculate module progress after quiz submission
+    const moduleProgressResult = await recalculateModuleProgress(
+      client,
+      userId,
+      module_id
+    );
+
+    if (!moduleProgressResult.success) {
+      console.error(
+        "⚠️ Failed to recalculate module progress, but quiz saved successfully"
+      );
+    }
+
+    // 🔥 NEW: Return sub-materi completion status to frontend
     return success(res, "QUIZ_SUBMITTED", "Quiz submitted successfully", {
       attempt: {
         id: attemptData.id,
@@ -190,6 +310,9 @@ const submitSimpleQuiz = async (req, res) => {
         is_passed: isPassed,
         passing_score: 70,
       },
+      // 🔥 NEW: Add sub-materi progress info for frontend to handle navigation
+      sub_materi_progress: currentSubMateriProgress,
+      module_progress: moduleProgressResult.data || null,
     });
   } catch (error) {
     console.error("Submit simple quiz error:", error);
