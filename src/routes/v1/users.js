@@ -5,6 +5,7 @@ const {
   updateMyProfile,
   uploadProfilePhoto,
   deleteProfilePhoto,
+  changePassword,
   upload,
 } = require("../../controllers/user-controller");
 
@@ -21,5 +22,8 @@ router.post(
   uploadProfilePhoto
 );
 router.delete("/me/profile-photo", authMiddleware, deleteProfilePhoto);
+
+// Change password endpoint
+router.post("/me/change-password", authMiddleware, changePassword);
 
 module.exports = router;
