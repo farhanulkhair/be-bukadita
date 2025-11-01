@@ -1,27 +1,11 @@
-const Joi = require("joi");
 const { success, failure } = require("../utils/respond");
 
-// Validation schemas
-const createNoteSchema = Joi.object({
-  title: Joi.string().max(200).allow(null, ""),
-  content: Joi.string().required().min(1).max(10000),
-  pinned: Joi.boolean().default(false),
-});
-
-const updateNoteSchema = Joi.object({
-  title: Joi.string().max(200).allow(null, ""),
-  content: Joi.string().min(1).max(10000),
-  pinned: Joi.boolean(),
-  archived: Joi.boolean(),
-});
-
-const searchSchema = Joi.object({
-  q: Joi.string().max(100),
-  pinned: Joi.string().valid("true", "false"),
-  archived: Joi.string().valid("true", "false"),
-  page: Joi.number().integer().min(1).default(1),
-  limit: Joi.number().integer().min(1).max(50).default(10),
-});
+// Import validation schemas from validator
+const {
+  createNoteSchema,
+  updateNoteSchema,
+  searchNotesSchema,
+} = require("../validators/notes-validator");
 
 // Helper function to format note response
 const formatNoteResponse = (note) => {
@@ -39,7 +23,7 @@ const formatNoteResponse = (note) => {
 // GET /api/v1/notes - Get user's notes with search and filters
 const getAllNotes = async (req, res) => {
   try {
-    const { error, value } = searchSchema.validate(req.query);
+    const { error, value } = searchNotesSchema.validate(req.query);
     if (error) {
       return failure(
         res,

@@ -93,6 +93,10 @@ const getAllQuizzes = async (req, res) => {
 
     const sb = req.supabaseAdmin || req.supabase;
 
+    // Check if user is admin
+    const isAdmin =
+      req.profile && ["admin", "superadmin"].includes(req.profile.role);
+
     // Build query
     let query = sb
       .from("materis_quizzes")
@@ -111,7 +115,13 @@ const getAllQuizzes = async (req, res) => {
       query = query.ilike("title", `%${search}%`);
     }
 
-    if (published !== undefined) {
+    // Non-admin: only show published quizzes
+    // Admin: show all (published & unpublished)
+    if (!isAdmin) {
+      query = query.eq("published", true);
+    }
+    // If admin explicitly requests filter by published, respect it
+    else if (isAdmin && published !== undefined) {
       query = query.eq("published", published === "true");
     }
 
@@ -673,19 +683,32 @@ const getQuizForSubMateri = async (req, res) => {
     const { subMateriId } = req.params;
     const user = req.user;
 
+    console.log("=== getQuizForSubMateri called ===");
+    console.log("subMateriId:", subMateriId);
+    console.log("user:", user?.id || "no user");
+
     const isAdmin =
       req.profile && ["admin", "superadmin"].includes(req.profile.role);
     const clientToUse = isAdmin
       ? req.supabaseAdmin || req.supabase
       : req.supabase;
 
-    // Get published quiz for this sub_materi
+    // For quiz questions, we need service role access since it's public content
+    // but RLS might block anonymous access
+    const questionsClient = req.supabaseAdmin || req.supabase;
+
+    console.log("Getting quiz for sub_materi:", subMateriId, "User:", user?.id);
+
+    // Get published quiz for this sub_materi with sub_materi and module info
     const { data: quizzes, error: quizError } = await clientToUse
       .from("materis_quizzes")
       .select(
         `
         id, title, description, time_limit_seconds, passing_score,
-        sub_materis!inner(id, title, published)
+        sub_materis!inner(
+          id, title, published, module_id,
+          modules!inner(id, title)
+        )
       `
       )
       .eq("sub_materi_id", subMateriId)
@@ -711,19 +734,78 @@ const getQuizForSubMateri = async (req, res) => {
 
     const quiz = quizzes[0];
 
+    // Get quiz questions (use service role to bypass RLS)
+    console.log("Fetching questions for quiz_id:", quiz.id);
+    const { data: questions, error: questionsError } = await questionsClient
+      .from("materis_quiz_questions")
+      .select("id, question_text, options, explanation, order_index")
+      .eq("quiz_id", quiz.id)
+      .order("order_index", { ascending: true });
+
+    console.log("Questions query result:", { questions, questionsError });
+
+    if (questionsError) {
+      console.error("Questions fetch error:", questionsError);
+      return failure(
+        res,
+        "QUESTIONS_FETCH_ERROR",
+        "Gagal mengambil soal quiz",
+        500,
+        {
+          details: questionsError.message,
+        }
+      );
+    }
+
+    // Format questions for frontend (hide correct answers for users)
+    const formattedQuestions =
+      questions?.map((question) => {
+        // Convert options from array of strings to array of objects with text and index
+        const formattedOptions = Array.isArray(question.options)
+          ? question.options.map((option, index) => ({
+              text: option,
+              index: index,
+            }))
+          : question.options;
+
+        return {
+          id: question.id,
+          question_text: question.question_text,
+          options: formattedOptions,
+          explanation: question.explanation,
+          order_index: question.order_index,
+        };
+      }) || [];
+
     // Check if user has attempted this quiz
     let userAttempt = null;
+    let userStatus = null;
     if (user && !isAdmin) {
-      const { data: attempt } = await clientToUse
+      const { data: attempts } = await clientToUse
         .from("user_quiz_attempts")
-        .select("id, score, is_passed, completed_at, started_at")
+        .select("id, score, passed, completed_at, started_at")
         .eq("user_id", user.id)
         .eq("quiz_id", quiz.id)
         .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(1);
 
-      userAttempt = attempt;
+      const latestAttempt = attempts?.[0];
+      const hasOngoing = latestAttempt && !latestAttempt.completed_at;
+      const hasCompleted = latestAttempt && latestAttempt.completed_at;
+
+      // Map 'passed' field to 'is_passed' for API consistency
+      userAttempt = latestAttempt
+        ? { ...latestAttempt, is_passed: latestAttempt.passed }
+        : null;
+
+      userStatus = {
+        has_ongoing_attempt: hasOngoing,
+        ongoing_attempt_id: hasOngoing ? latestAttempt.id : null,
+        is_completed: hasCompleted,
+        latest_score: hasCompleted ? latestAttempt.score : null,
+        is_passed: hasCompleted ? latestAttempt.passed : false,
+        last_completed_at: hasCompleted ? latestAttempt.completed_at : null,
+      };
     }
 
     return success(res, "QUIZ_FETCH_SUCCESS", "Quiz ditemukan", {
@@ -733,8 +815,20 @@ const getQuizForSubMateri = async (req, res) => {
         description: quiz.description,
         time_limit_seconds: quiz.time_limit_seconds,
         passing_score: quiz.passing_score,
-        user_attempt: userAttempt,
+        question_count: formattedQuestions.length,
+        sub_materi: {
+          id: quiz.sub_materis.id,
+          title: quiz.sub_materis.title,
+          module_id: quiz.sub_materis.module_id,
+        },
+        module: {
+          id: quiz.sub_materis.modules.id,
+          title: quiz.sub_materis.modules.title,
+        },
+        questions: formattedQuestions,
+        user_attempt: userAttempt, // For backward compatibility
       },
+      user_status: userStatus,
     });
   } catch (error) {
     console.error("Quiz controller error:", error);

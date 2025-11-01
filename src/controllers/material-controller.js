@@ -788,12 +788,18 @@ const getMaterialQuizzes = async (req, res) => {
     if (user && !isAdmin && enrichedQuizzes.length > 0) {
       const quizIds = enrichedQuizzes.map((q) => q.id);
 
-      const { data: attempts } = await sb
+      const { data: rawAttempts } = await sb
         .from("user_quiz_attempts")
-        .select("quiz_id, score, is_passed, completed_at, started_at")
+        .select("quiz_id, score, passed, completed_at, started_at")
         .eq("user_id", user.id)
         .in("quiz_id", quizIds)
         .order("created_at", { ascending: false });
+
+      // Map 'passed' to 'is_passed' for API consistency
+      const attempts = rawAttempts?.map((attempt) => ({
+        ...attempt,
+        is_passed: attempt.passed,
+      }));
 
       // Group attempts by quiz_id and get latest attempt
       const attemptsMap = {};

@@ -1,7 +1,14 @@
 const { supabase, supabaseAdmin } = require("../lib/SupabaseClient");
 const { paginate } = require("../utils/paginate");
-const Joi = require("joi");
 const { success, failure } = require("../utils/respond");
+
+// Import validation schemas from validator
+const {
+  createUserSchema,
+  updateUserSchema,
+  updateUserRoleSchema,
+  inviteAdminSchema,
+} = require("../validators/user-validator");
 
 // Helpers for safe cross-table ops (handle optional tables like 'admins')
 async function safeUpdateIfTableExists(client, table, matchCol, id, updates) {
@@ -41,57 +48,6 @@ async function safeDeleteIfTableExists(client, table, matchCol, id) {
   }
 }
 
-// Validation schemas
-const createUserSchema = Joi.object({
-  email: Joi.string().email().required().messages({
-    "string.email": "Email must be a valid email address",
-    "any.required": "Email is required",
-  }),
-  password: Joi.string().min(6).required().messages({
-    "string.min": "Password must be at least 6 characters long",
-    "any.required": "Password is required",
-  }),
-  full_name: Joi.string().min(2).max(100).required().messages({
-    "string.min": "Full name must be at least 2 characters long",
-    "string.max": "Full name must not exceed 100 characters",
-    "any.required": "Full name is required",
-  }),
-  phone: Joi.string()
-    .pattern(/^(\+62[8-9][\d]{8,11}|0[8-9][\d]{8,11})$/)
-    .optional()
-    .allow("")
-    .messages({
-      "string.pattern.base":
-        "Phone number must start with 08 and be 10-13 digits long (e.g., 08123456789)",
-    }),
-  address: Joi.string().trim().max(500).allow("", null).optional(),
-  profil_url: Joi.string().trim().uri().allow("", null).optional(),
-  date_of_birth: Joi.date().iso().max("now").allow(null).optional().messages({
-    "date.max": "Tanggal lahir tidak boleh lebih dari hari ini",
-  }),
-  role: Joi.string().valid("pengguna", "admin").default("pengguna"),
-});
-
-const updateUserSchema = Joi.object({
-  full_name: Joi.string().min(2).max(100).optional().messages({
-    "string.min": "Full name must be at least 2 characters long",
-    "string.max": "Full name must not exceed 100 characters",
-  }),
-  phone: Joi.string()
-    .pattern(/^(\+62[8-9][\d]{8,11}|0[8-9][\d]{8,11})$/)
-    .optional()
-    .allow("")
-    .messages({
-      "string.pattern.base":
-        "Phone number must start with 08 and be 10-13 digits long (e.g., 08123456789)",
-    }),
-  email: Joi.string().email().optional(),
-  address: Joi.string().trim().max(500).allow("", null).optional(),
-  profil_url: Joi.string().trim().uri().allow("", null).optional(),
-  date_of_birth: Joi.date().iso().max("now").allow(null).optional().messages({
-    "date.max": "Tanggal lahir tidak boleh lebih dari hari ini",
-  }),
-});
 
 // GET /api/admin/users - Get all user profiles (admin only) with role-aware visibility rules
 // Rules:
@@ -160,7 +116,7 @@ const getAllUsers = async (req, res) => {
 
     // Enrich with auth metadata (last_sign_in_at, email_confirmed_at)
     let items = data || [];
-    if (items && items.length > 0) {
+    if (items && items.length > 0 && supabaseAdmin) {
       try {
         items = await Promise.all(
           items.map(async (u) => {
@@ -177,6 +133,7 @@ const getAllUsers = async (req, res) => {
               }
             } catch (e) {
               // ignore per-user auth fetch errors
+              console.warn(`Failed to get auth for user ${u.id}:`, e?.message);
             }
             return { ...u, email_confirmed_at: null, last_sign_in_at: null };
           })

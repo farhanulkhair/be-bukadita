@@ -1,39 +1,14 @@
 const { supabaseAnon, supabaseAdmin } = require("../lib/SupabaseClient");
-const Joi = require("joi");
 const { createClient } = require("@supabase/supabase-js");
 const { success, failure } = require("../utils/respond");
 
-// Validation schemas
-const profileSchema = Joi.object({
-  full_name: Joi.string().min(2).max(100).required().messages({
-    "string.min": "Full name must be at least 2 characters long",
-    "string.max": "Full name must not exceed 100 characters",
-    "any.required": "Full name is required",
-  }),
-  phone: Joi.string()
-    .pattern(/^(\+62[8-9][\d]{8,11}|0[8-9][\d]{8,11})$/)
-    .optional()
-    .messages({
-      "string.pattern.base":
-        "Phone number must start with 08 and be 10-13 digits long (e.g., 08123456789)",
-    }),
-  role: Joi.string().valid("pengguna", "admin").optional(),
-});
-
-const registerSchema = Joi.object({
-  email: Joi.string().email().required(),
-  password: Joi.string().min(6).required(),
-  full_name: Joi.string().trim().min(2).max(100).required(),
-  phone: Joi.string()
-    .trim()
-    .pattern(/^(\+62[8-9][\d]{8,11}|0[8-9][\d]{8,11})$/)
-    .optional(),
-});
-
-const loginSchema = Joi.object({
-  email: Joi.string().email().required(),
-  password: Joi.string().min(6).required(),
-});
+// Import validation schemas from validator
+const {
+  profileSchema,
+  registerSchema,
+  loginSchema,
+  changePasswordSchema,
+} = require("../validators/auth-validator");
 
 // Utility: detect missing 'role' column error from PostgREST/Supabase
 function isMissingRoleColumn(err) {
@@ -253,13 +228,27 @@ const register = async (req, res) => {
 
     const { email, password, full_name, phone } = value;
 
-    // Email format validation (redundant but explicit)
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return failure(res, "AUTH_INVALID_EMAIL", "Invalid email format", 400);
+    console.log("=== REGISTRATION ATTEMPT ===");
+    console.log("Email (normalized):", email);
+    console.log("Full name:", full_name);
+    console.log("Phone:", phone || "(not provided)");
+    
+    // Check if user already exists
+    try {
+      const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers();
+      const userExists = existingUsers?.users?.find(u => u.email?.toLowerCase() === email.toLowerCase());
+      if (userExists) {
+        console.log("User already exists with this email");
+        return failure(
+          res,
+          "AUTH_EMAIL_ALREADY_EXISTS",
+          "Email sudah terdaftar. Silakan login atau gunakan email lain.",
+          400
+        );
+      }
+    } catch (checkErr) {
+      console.warn("Error checking existing users (non-fatal):", checkErr.message);
     }
-
-    console.log("Attempting to register user:", { email, full_name, phone });
 
     // Register user with Supabase Auth
     const { data: authData, error: authError } = await supabaseAnon.auth.signUp(
@@ -364,7 +353,7 @@ const register = async (req, res) => {
   }
 };
 
-// POST /api/v1/auth/login - Login with email & password
+// POST /api/v1/auth/login - Login with email or phone & password
 const login = async (req, res) => {
   try {
     const { error, value } = loginSchema.validate(req.body);
@@ -377,8 +366,78 @@ const login = async (req, res) => {
       );
     }
 
-    const { email, password } = value;
+    const { identifier, password } = value;
+    let email = identifier;
 
+    console.log("=== LOGIN ATTEMPT ===");
+    console.log("Identifier:", identifier);
+    
+    // Check if identifier is phone number (starts with 0, +62, or 62)
+    const isPhoneNumber = /^(\+62|62|0)[0-9]{9,12}$/.test(identifier);
+    
+    if (isPhoneNumber) {
+      console.log("Identifier is a phone number, looking up email...");
+      
+      // Normalize phone number (convert all formats to +62 format for comparison)
+      let normalizedPhone = identifier;
+      if (identifier.startsWith('0')) {
+        normalizedPhone = '+62' + identifier.substring(1);
+      } else if (identifier.startsWith('62')) {
+        normalizedPhone = '+' + identifier;
+      }
+      
+      // Also try original and other variants
+      const phoneVariants = [
+        identifier,
+        normalizedPhone,
+        identifier.startsWith('0') ? '62' + identifier.substring(1) : null,
+        identifier.startsWith('0') ? '+62' + identifier.substring(1) : null,
+        identifier.startsWith('+62') ? identifier.substring(1) : null,
+        identifier.startsWith('+62') ? '0' + identifier.substring(3) : null,
+        identifier.startsWith('62') && !identifier.startsWith('+') ? '0' + identifier.substring(2) : null,
+      ].filter(Boolean);
+      
+      console.log("Phone variants to search:", phoneVariants);
+      
+      // Search for user with this phone number in profiles table
+      const { data: profiles, error: profileError } = await supabaseAdmin
+        .from("profiles")
+        .select("email, phone")
+        .in("phone", phoneVariants);
+      
+      if (profileError) {
+        console.error("Error looking up phone number:", profileError);
+        return failure(
+          res,
+          "AUTH_LOGIN_ERROR",
+          "Terjadi kesalahan saat mencari nomor HP",
+          500
+        );
+      }
+      
+      if (!profiles || profiles.length === 0) {
+        console.log("No user found with phone number:", identifier);
+        return failure(
+          res,
+          "AUTH_LOGIN_INVALID_CREDENTIALS",
+          "Nomor HP tidak terdaftar. Pastikan nomor HP sudah terdaftar.",
+          401
+        );
+      }
+      
+      // Use the email from the profile
+      email = profiles[0].email;
+      console.log("Found email for phone number:", email);
+    } else {
+      console.log("Identifier is an email");
+      // Normalize email to lowercase
+      email = identifier.toLowerCase();
+    }
+    
+    console.log("Final email for login:", email);
+    console.log("Email length:", email.length);
+    console.log("Has whitespace:", email !== email.trim());
+    
     const { data: authData, error: authError } =
       await supabaseAnon.auth.signInWithPassword({
         email,
@@ -386,12 +445,29 @@ const login = async (req, res) => {
       });
 
     if (authError) {
-      console.error("Login error:", authError);
+      console.error("=== LOGIN ERROR ===");
+      console.error("Error code:", authError.code);
+      console.error("Error message:", authError.message);
+      console.error("Error status:", authError.status);
+      
+      // Check if email exists in auth.users
+      try {
+        const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers();
+        const userExists = existingUsers?.users?.find(u => u.email?.toLowerCase() === email.toLowerCase());
+        console.log("User exists in auth.users:", !!userExists);
+        if (userExists) {
+          console.log("Existing user email:", userExists.email);
+          console.log("Email confirmed:", !!userExists.email_confirmed_at);
+        }
+      } catch (checkErr) {
+        console.error("Error checking user existence:", checkErr);
+      }
+      
       if (authError.message?.includes("Invalid login credentials")) {
         return failure(
           res,
           "AUTH_LOGIN_INVALID_CREDENTIALS",
-          "Invalid email or password",
+          "Email atau password salah. Pastikan email sudah terdaftar dan password benar.",
           401
         );
       }
@@ -399,11 +475,11 @@ const login = async (req, res) => {
         return failure(
           res,
           "AUTH_LOGIN_EMAIL_NOT_CONFIRMED",
-          "Please confirm your email before logging in",
+          "Silakan konfirmasi email Anda terlebih dahulu",
           401
         );
       }
-      return failure(res, "AUTH_LOGIN_ERROR", "Failed to login", 500);
+      return failure(res, "AUTH_LOGIN_ERROR", `Login gagal: ${authError.message}`, 500);
     }
 
     // Fetch profile with authenticated client first (RLS owner)

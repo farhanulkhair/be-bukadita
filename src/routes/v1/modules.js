@@ -1,5 +1,6 @@
 const express = require("express");
 const authMiddleware = require("../../middlewares/auth-middleware");
+const { optionalAuth } = require("../../middlewares/auth-middleware");
 const { requireAdmin } = require("../../middlewares/role-middleware");
 const {
   getModules,
@@ -10,35 +11,29 @@ const {
 } = require("../../controllers/module-controller");
 
 const router = express.Router();
-const { createMaterial } = require("../../controllers/material-controller");
 
-// Public read
-router.get("/", getModules);
-router.get("/:id", getModuleById);
+// ============================================================================
+// PUBLIC ROUTES (FE & Backoffice can access)
+// ============================================================================
 
-// NOTE: Module quizzes endpoint temporarily disabled - use /admin/quizzes with module filter
-router.get("/:module_id/quizzes", (req, res) => {
-  return res.status(501).json({
-    success: false,
-    message:
-      "Module quizzes endpoint not implemented. Use /api/v1/admin/quizzes with filtering.",
-  });
-});
+// GET /api/v1/modules - Get all modules (published for users, all for admin)
+// Uses optional auth to detect admin role if logged in
+router.get("/", optionalAuth, getModules);
 
-// Admin-only CRUD
+// GET /api/v1/modules/:id - Get module by ID with sub-materials
+router.get("/:id", optionalAuth, getModuleById);
+
+// ============================================================================
+// ADMIN ONLY ROUTES (Backoffice only)
+// ============================================================================
+
+// POST /api/v1/modules - Create new module (Admin only)
 router.post("/", authMiddleware, requireAdmin, createModule);
-router.put("/:id", authMiddleware, requireAdmin, updateModule);
-router.delete("/:id", authMiddleware, requireAdmin, deleteModule);
 
-// Admin nested alias: create material under a module (auto inject module_id)
-router.post(
-  "/:module_id/materials",
-  authMiddleware,
-  requireAdmin,
-  (req, res, next) => {
-    req.body = { ...(req.body || {}), module_id: req.params.module_id };
-    return createMaterial(req, res, next);
-  }
-);
+// PUT /api/v1/modules/:id - Update module (Admin only)
+router.put("/:id", authMiddleware, requireAdmin, updateModule);
+
+// DELETE /api/v1/modules/:id - Delete module (Admin only)
+router.delete("/:id", authMiddleware, requireAdmin, deleteModule);
 
 module.exports = router;

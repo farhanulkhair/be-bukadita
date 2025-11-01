@@ -2,16 +2,28 @@
 
 Backend RESTful API untuk aplikasi Bukadita (Buku Kandita) - sistem informasi posyandu dengan Express.js dan Supabase.
 
+## ⚡ Recent Updates (Refactoring)
+
+**Backend telah direfactor untuk struktur yang lebih bersih dan konsisten!**
+
+- ✅ **Menghilangkan duplikasi routes** - 5 file duplicate dihapus, ~800 lines code reduced
+- ✅ **Struktur yang konsisten** - Semua routes di `/api/v1/` dengan pattern yang jelas
+- ✅ **Endpoint terpadu** - FE dan Backoffice pakai endpoint sama, middleware yang membedakan
+- ✅ **Better organization** - Satu resource = satu file route
+
+📖 **Dokumentasi Migrasi**: Lihat [`MIGRATION_GUIDE.md`](./MIGRATION_GUIDE.md) untuk detail perubahan endpoint.
+
 ## 🚀 Fitur
 
 - **Autentikasi & Otorisasi**:
   - Manual registration/login dengan email & password
   - Google OAuth melalui Supabase (opsional)
-  - Role-based access control (admin/pengguna)
-- **Manajemen Jadwal**: CRUD jadwal posyandu untuk admin
-- **Manajemen Materi**: Sistem artikel/materi dengan status publish/draft
-- **Sistem Kuis**: Kuis interaktif dengan soal pilihan ganda dan scoring
-- **Dashboard Admin**: Statistik dan manajemen pengguna
+  - Role-based access control (superadmin/admin/user)
+- **Manajemen Module & Material**: Sistem modul pembelajaran dengan sub-materi dan poin-poin pembahasan
+- **Sistem Quiz**: Quiz interaktif dengan soal pilihan ganda, scoring, dan tracking progress
+- **Sistem Notes**: Catatan pribadi user untuk setiap modul
+- **Progress Tracking**: Tracking progress pembelajaran user per module dan sub-materi
+- **Dashboard Admin**: Statistik dan manajemen pengguna lengkap
 - **Security**: Helmet, CORS, Rate limiting, dan Row Level Security (RLS)
 
 ## � Format Response Standar
@@ -130,50 +142,106 @@ Server akan berjalan di `http://localhost:4000`
 
 ## 🔌 API Endpoints
 
-### Health Check
+> **Note**: Backend telah direfactor! Lihat [`MIGRATION_GUIDE.md`](./MIGRATION_GUIDE.md) untuk detail lengkap perubahan endpoint.
 
-- `GET /health` - Status server
+### Struktur API v1
 
-### Authentication (v1)
+```
+/api/v1/
+├── /auth          → Authentication & Authorization
+├── /modules       → Module Management (public read, admin CRUD)
+├── /materials     → Material & Poin Management (public read, admin CRUD)
+├── /quizzes       → Quiz System (user quiz taking + admin management)
+├── /users         → User Management (self-management + admin)
+├── /notes         → Personal Notes (authenticated users)
+├── /progress      → Progress Tracking (authenticated users)
+└── /admin         → Admin Dashboard & Stats
+```
 
-- `POST /api/v1/auth/register` - Registrasi dengan email & password
-- `POST /api/v1/auth/login` - Login dengan email & password
-- `POST /api/v1/auth/logout` - Logout user
-- `POST /api/v1/auth/profile` - Buat/update profil setelah sign-in
-- `POST /api/v1/auth/create-missing-profile` - Buat profil jika belum ada
+### Quick Reference
 
-### Materials & Quizzes (Authenticated Users)
+#### 🔓 Public Endpoints (No Auth)
+```
+GET  /health
+GET  /api/v1
+GET  /api/v1/modules
+GET  /api/v1/modules/:id
+GET  /api/v1/materials/public
+GET  /api/v1/materials/:id
+```
 
-- `GET /api/v1/schedules` - Daftar jadwal posyandu (public)
-- `GET /api/v1/materials` - Daftar materi (published only jika bukan admin)
-- `GET /api/v1/materials/:id` - Detail materi
-- `GET /api/v1/quizzes` - Daftar kuis
-- `GET /api/v1/quizzes/:id` - Detail kuis dengan soal
-- `POST /api/v1/quizzes/:quizId/submit` - Submit jawaban kuis
+#### 🔐 User Endpoints (Auth Required)
+```
+# Auth
+POST /api/v1/auth/register
+POST /api/v1/auth/login
+POST /api/v1/auth/logout
 
-### User Self Profile
+# Profile
+GET  /api/v1/users/me
+PUT  /api/v1/users/me
+POST /api/v1/users/me/profile-photo
+POST /api/v1/users/me/change-password
 
-- `GET /api/v1/users/me` - Profil sendiri
-- `PUT /api/v1/users/me` - Update profil sendiri
+# Quizzes
+GET  /api/v1/quizzes
+GET  /api/v1/quizzes/module/:moduleId
+GET  /api/v1/quizzes/:id
+POST /api/v1/quizzes/:quizId/start
+GET  /api/v1/quizzes/:quizId/questions
+POST /api/v1/quizzes/:quizId/submit
+GET  /api/v1/quizzes/:quizId/results
 
-### Admin (Admin Role Required)
+# Notes
+GET  /api/v1/notes
+POST /api/v1/notes
+PUT  /api/v1/notes/:id
+DELETE /api/v1/notes/:id
 
-- `POST /api/v1/admin/schedules` - Buat jadwal
-- `PUT /api/v1/admin/schedules/:id` - Update jadwal
-- `DELETE /api/v1/admin/schedules/:id` - Hapus jadwal
-- `POST /api/v1/admin/materials` - Buat materi
-- `PUT /api/v1/admin/materials/:id` - Update materi
-- `DELETE /api/v1/admin/materials/:id` - Hapus materi
-- `POST /api/v1/admin/quizzes` - Buat kuis dengan soal
-- `DELETE /api/v1/admin/quizzes/:id` - Hapus kuis
-- `GET /api/v1/admin/users` - Daftar semua user
-- `POST /api/v1/admin/users` - Buat user baru
-- `GET /api/v1/admin/users/:id` - Detail user
-- `PUT /api/v1/admin/users/:id` - Update profil user
-- `PUT /api/v1/admin/users/:id/role` - Update role user
-- `DELETE /api/v1/admin/users/:id` - Hapus user
-- `GET /api/v1/admin/dashboard/stats` - Statistik dashboard
-- `GET /api/v1/admin/quiz-results` - Hasil kuis semua user
+# Progress
+GET  /api/v1/progress/modules
+GET  /api/v1/progress/modules/:module_id
+POST /api/v1/progress/materials/:id/poins/:poin_id/complete
+```
+
+#### 👑 Admin Endpoints (Admin Auth Required)
+```
+# Modules
+POST   /api/v1/modules
+PUT    /api/v1/modules/:id
+DELETE /api/v1/modules/:id
+
+# Materials & Poins
+POST   /api/v1/materials
+PUT    /api/v1/materials/:id
+DELETE /api/v1/materials/:id
+POST   /api/v1/materials/:subMateriId/poins
+PUT    /api/v1/materials/poins/:id
+DELETE /api/v1/materials/poins/:id
+
+# Quizzes
+GET    /api/v1/quizzes/admin/all
+POST   /api/v1/quizzes/admin
+PUT    /api/v1/quizzes/admin/:id
+DELETE /api/v1/quizzes/admin/:id
+POST   /api/v1/quizzes/admin/:quizId/questions
+
+# Users
+GET    /api/v1/users
+POST   /api/v1/users
+PUT    /api/v1/users/:id
+DELETE /api/v1/users/:id
+
+# Dashboard
+GET    /api/v1/admin/dashboard/stats
+GET    /api/v1/admin/quiz-results
+```
+
+📖 **Full Documentation**: 
+- [`ENDPOINT_LIST.md`](./ENDPOINT_LIST.md) - Complete endpoint list
+- [`API_DOCS.md`](./API_DOCS.md) - Detailed API documentation
+- [`API_USER_GUIDE.md`](./API_USER_GUIDE.md) - User guide
+- [`TESTING_GUIDE.md`](./TESTING_GUIDE.md) - Testing guide
 
 ## 📝 Contoh Request/Response
 

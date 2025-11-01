@@ -1,59 +1,79 @@
 const express = require("express");
 
-// Sub-routers
+// ============================================================================
+// CONSOLIDATED V1 API ROUTES
+// All routes follow consistent pattern:
+// - Public routes: No authentication required
+// - User routes: authMiddleware required
+// - Admin routes: authMiddleware + requireAdmin required
+// ============================================================================
+
+// Import route modules
 const authRouter = require("./auth");
+const modulesRouter = require("./modules");
 const materialsRouter = require("./materials");
 const quizzesRouter = require("./quizzes");
 const usersRouter = require("./users");
-const modulesRouter = require("./modules");
-const adminRouter = require("./admin");
-const notesRouter = require("../notes-routes");
-const userQuizzesRouter = require("./user-quizzes");
+const notesRouter = require("./notes");
 const progressRouter = require("./progress");
-const kuisRouter = require("./kuis");
-const simpleQuizzesRouter = require("./simple-quizzes");
+const adminRouter = require("./admin");
 
 const router = express.Router();
 
-// Poin details router for direct access
-const {
-  getPoinById,
-  updatePoin,
-  deletePoin,
-} = require("../../controllers/poin-controller");
-const authMiddleware = require("../../middlewares/auth-middleware");
-const { requireAdmin } = require("../../middlewares/role-middleware");
+// ============================================================================
+// MOUNT ROUTES
+// ============================================================================
 
-// Mount resource routers (all already versioned under /api/v1 in app.js via this index)
+// Auth routes (register, login, logout, refresh)
 router.use("/auth", authRouter);
-router.use("/materials", materialsRouter);
-router.use("/quizzes", quizzesRouter);
-router.use("/users", usersRouter);
-router.use("/admin", adminRouter);
+
+// Module routes (public read, admin CRUD)
 router.use("/modules", modulesRouter);
+
+// Material routes (public read, admin CRUD, includes poins)
+router.use("/materials", materialsRouter);
+
+// Quiz routes (consolidated - user quiz taking + admin management)
+router.use("/quizzes", quizzesRouter);
+
+// User routes (self-management + admin user management)
+router.use("/users", usersRouter);
+
+// Notes routes (authenticated users)
 router.use("/notes", notesRouter);
-router.use("/user-quizzes", userQuizzesRouter);
+
+// Progress routes (user progress tracking)
 router.use("/progress", progressRouter);
-router.use("/kuis", kuisRouter);
-router.use("/simple-quizzes", simpleQuizzesRouter);
 
-// Direct poin details routes (for admin management)
-router.get("/poins/:id", getPoinById); // Get specific poin (with access control)
-router.put("/poins/:id", authMiddleware, requireAdmin, updatePoin); // Admin update poin
-router.delete("/poins/:id", authMiddleware, requireAdmin, deletePoin); // Admin delete poin
+// Admin routes (dashboard, stats, admin invite)
+router.use("/admin", adminRouter);
 
-// Direct quiz questions routes (for admin management - fallback endpoints)
-const {
-  updateQuestion,
-  deleteQuestion,
-} = require("../../controllers/quiz-controller");
+// ============================================================================
+// API INFO ENDPOINT
+// ============================================================================
 
-router.put("/quiz-questions/:id", authMiddleware, requireAdmin, updateQuestion); // Admin update question
-router.delete(
-  "/quiz-questions/:id",
-  authMiddleware,
-  requireAdmin,
-  deleteQuestion
-); // Admin delete question
+router.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Bukadita API v1",
+    version: "1.0.0",
+    endpoints: {
+      auth: "/api/v1/auth",
+      modules: "/api/v1/modules",
+      materials: "/api/v1/materials",
+      quizzes: "/api/v1/quizzes",
+      users: "/api/v1/users",
+      notes: "/api/v1/notes",
+      progress: "/api/v1/progress",
+      admin: "/api/v1/admin",
+    },
+    documentation: {
+      api_docs: "/api-docs",
+      endpoint_list: "/endpoint-list",
+      user_guide: "/user-guide",
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
 
 module.exports = router;

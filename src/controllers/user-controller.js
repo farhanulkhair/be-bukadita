@@ -1,30 +1,13 @@
-const Joi = require("joi");
 const { success, failure } = require("../utils/respond");
 const multer = require("multer");
 const path = require("path");
 
-// Validation schema for updating own profile
-const updateOwnProfileSchema = Joi.object({
-  full_name: Joi.string().trim().min(2).max(100).optional(),
-  phone: Joi.string()
-    .trim()
-    .pattern(/^($|(\+62[8-9][\d]{8,11})|(0[8-9][\d]{8,11}))$/)
-    .messages({
-      "string.pattern.base":
-        "Phone must start with 08 (or +62) dan 10-13 digit. Contoh: 081234567890",
-    })
-    .optional(),
-  email: Joi.string().trim().email().optional(),
-  address: Joi.string().trim().max(500).allow("", null).optional(),
-  profil_url: Joi.string().trim().uri().allow("", null).optional(),
-  date_of_birth: Joi.date().iso().max("now").allow(null).optional().messages({
-    "date.max": "Tanggal lahir tidak boleh lebih dari hari ini",
-  }),
-})
-  .min(1)
-  .messages({
-    "object.min": "Minimal satu field diubah",
-  });
+// Import validation schemas from validator
+const {
+  updateOwnProfileSchema,
+  changePasswordSchema,
+} = require("../validators/user-validator");
+const { changePasswordSchema: authChangePasswordSchema } = require("../validators/auth-validator");
 
 // GET /api/pengguna/profile - get own profile
 async function getMyProfile(req, res) {
@@ -66,7 +49,8 @@ async function getMyProfile(req, res) {
     // Convert old public URLs to signed URLs automatically
     if (
       profile.profil_url &&
-      profile.profil_url.includes("/object/public/foto_profil/")
+      profile.profil_url.includes("/object/public/foto_profil/") &&
+      adminClient
     ) {
       try {
         console.log("🔄 Converting old public URL to signed URL...");
@@ -119,6 +103,8 @@ async function getMyProfile(req, res) {
         );
         // Don't fail the request, just log and continue with public URL
       }
+    } else if (profile.profil_url && !adminClient) {
+      console.log("⚠️ Admin client not available, skipping URL conversion");
     }
 
     return success(
@@ -129,6 +115,9 @@ async function getMyProfile(req, res) {
     );
   } catch (e) {
     console.error("getMyProfile error:", e);
+    console.error("Error stack:", e.stack);
+    console.error("User ID:", req.user?.id);
+    console.error("Request headers:", req.headers);
     return failure(res, "USER_INTERNAL_ERROR", "Internal server error", 500, {
       details: e.message,
     });
@@ -301,6 +290,9 @@ async function updateMyProfile(req, res) {
     );
   } catch (e) {
     console.error("updateMyProfile error:", e);
+    console.error("Error stack:", e.stack);
+    console.error("Request body:", req.body);
+    console.error("User ID:", req.user?.id);
     return failure(res, "USER_INTERNAL_ERROR", "Internal server error", 500, {
       details: e.message,
     });
@@ -525,26 +517,18 @@ async function changePassword(req, res) {
       return failure(res, "USER_UNAUTHORIZED", "Unauthorized", 401);
     }
 
-    const { currentPassword, newPassword } = req.body;
-
-    // Validation
-    if (!currentPassword || !newPassword) {
+    // Validate request body
+    const { error: validationError, value } = authChangePasswordSchema.validate(req.body);
+    if (validationError) {
       return failure(
         res,
         "VALIDATION_ERROR",
-        "Current password and new password are required",
-        400
+        validationError.details[0].message,
+        422
       );
     }
 
-    if (newPassword.length < 6) {
-      return failure(
-        res,
-        "VALIDATION_ERROR",
-        "New password must be at least 6 characters",
-        400
-      );
-    }
+    const { current_password, new_password } = value;
 
     // Use authenticated client to update password
     const userClient = req.authenticatedClient;
@@ -561,7 +545,7 @@ async function changePassword(req, res) {
     const { data: signInData, error: signInError } =
       await userClient.auth.signInWithPassword({
         email: req.user.email,
-        password: currentPassword,
+        password: current_password,
       });
 
     if (signInError) {
@@ -575,7 +559,7 @@ async function changePassword(req, res) {
 
     // Update password
     const { error: updateError } = await userClient.auth.updateUser({
-      password: newPassword,
+      password: new_password,
     });
 
     if (updateError) {
